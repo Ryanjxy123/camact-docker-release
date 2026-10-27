@@ -1,0 +1,90 @@
+{
+  "schema_version": "camact.native_image_codecs.v1",
+  "node": {
+    "path": ".tools/node/bin/node",
+    "sha256": "e237a2839d0cbdc9a9a2adda1a184afc0f5b20306ffbe923af5686550472d8a8"
+  },
+  "codecs": {
+    "claude": {
+      "version": "2.1.160",
+      "cli": {
+        "path": ".tools/claude/node_modules/@anthropic-ai/claude-code-linux-x64/claude",
+        "sha256": "2b84cc2e04633619eab02b9f77ed00a56b64682b4fa7b3267149ee9eb1fecfc7"
+      },
+      "package": {
+        "path": ".tools/claude/node_modules/@anthropic-ai/claude-code-linux-x64/package.json",
+        "sha256": "cd2e30c80759be2aed5846b260c7d881ff9a29665bd7460c5df61381462d5027"
+      },
+      "module": {
+        "path": ".tools/visual-codecs/claude-image-processor.node",
+        "sha256": "e56566e74bdfc070a48dd17f5a7f93c7564c6c9d774d9328c64ea3e99365a434"
+      },
+      "sources": []
+    },
+    "codex": {
+      "version": "0.147.0",
+      "cli": {
+        "path": ".tools/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin/codex",
+        "sha256": "cb0a15567e9a60a5820d54b0f6ae86d504dc3805c1eab21a47f70e3eb7b73a40"
+      },
+      "package": {
+        "path": ".tools/codex/node_modules/@openai/codex/package.json",
+        "sha256": "bbaf3b9597b54bc1d4cf4aea93870e9035629d79bdaba58234011c31f0cfcf3d"
+      },
+      "helper": {
+        "path": ".tools/visual-codecs/codex-image-replay",
+        "sha256": "d6d181fd8f001aac0724e474f28ac07918e85a289eb9469901d9b729261b4fd9"
+      },
+      "sources": [
+        {
+          "path": "harness/camact_visual_provenance_v1/native_codex_replay/src/main.rs",
+          "sha256": "e800e6a9bdae5ff3c272aa052e97c46524b5db9c113cc3be9db0d8c8427bf323"
+        },
+        {
+          "path": "harness/camact_visual_provenance_v1/native_codex_replay/Cargo.lock",
+          "sha256": "cad5de8827790c6269f6d61be9fe326b0961a6e59f87f3c8ad181ce5b0c2817b"
+        }
+      ]
+    },
+    "opencode": {
+      "version": "2.0.32",
+      "cli": {
+        "path": ".tools/opencode/node_modules/@opencode/cli/bin/opencode.exe",
+        "sha256": "489b51816a77809e841310e80c88e834c28c19ad1639e12ba8a19f08b47ab607"
+      },
+      "package": {
+        "path": ".tools/opencode/node_modules/@opencode/cli/package.json",
+        "sha256": "0c30149b5df61a75da231674a65f21c73b2b57439b88302b183f258d41cfa9ae"
+      },
+      "helper_module": {
+        "path": "evaluation/camact_eval/visual_opencode_exact.cjs",
+        "sha256": "30c941acfdaafed536a98d1d1e7919f2de469b2126ba66c04d0a6f6bafcc4d90"
+      },
+      "photon_module": {
+        "path": ".tools/openclaw/node_modules/openclaw/node_modules/@silvia-odwyer/photon-node/photon_rs.js",
+        "sha256": "d60656705f0d59baa79e36b0381eb023f1864eeb57e92956cf21dcd9fb8f879f"
+      },
+      "photon_wasm": {
+        "path": ".tools/openclaw/node_modules/openclaw/node_modules/@silvia-odwyer/photon-node/photon_rs_bg.wasm",
+        "sha256": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c"
+      },
+      "photon_package": {
+        "path": ".tools/openclaw/node_modules/openclaw/node_modules/@silvia-odwyer/photon-node/package.json",
+        "sha256": "a1362f6a9e9d942d6b77555f1e40b19a6b3e2cc04bfb8af95e452a6f769fe7db"
+      },
+      "embedded_wasm": {
+        "offset": 190938570,
+        "length": 1881634,
+        "sha256": "10468181565c56004c867f3a4af96f89a0ef5a63a72f2b5fb12c1f1992a3615c"
+      },
+      "sources": []
+    }
+  },
+  "build_provenance": {
+    "rustc": "rustc 1.90.0 (1159e78c4 2025-09-14)",
+    "cargo_locked": true,
+    "native_cli_bytes_unchanged": true,
+    "claude_embedded_offset": 240840417,
+    "claude_embedded_length": 1471800
+  }
+}

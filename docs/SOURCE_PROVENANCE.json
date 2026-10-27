@@ -1,0 +1,647 @@
+{
+  "schema": "camact.source-provenance.v1",
+  "snapshot_date": "2026-10-28",
+  "source": "Current working CamAct files, including effective uncommitted changes; source had no Git history.",
+  "upstream_git_history_copied": false,
+  "benchmark_data_copied": false,
+  "files": {
+    "benchmark/benchmark_runner/mllm_adapter.py": {
+      "source_sha256": "b56edb981d4d2c6560307b1eda81d34f15ef5a6f3709b291100dc0901b17dc18",
+      "release_sha256": "b56edb981d4d2c6560307b1eda81d34f15ef5a6f3709b291100dc0901b17dc18"
+    },
+    "benchmark/benchmark_runner/run_model.py": {
+      "source_sha256": "59782fd8c6b45949748686a6c958888fca45f50739e57d09271156bda70a4fbf",
+      "release_sha256": "59782fd8c6b45949748686a6c958888fca45f50739e57d09271156bda70a4fbf"
+    },
+    "benchmark/benchmark_runner/run_task.py": {
+      "source_sha256": "2531860ca225ea56421fb912a06c79c298126535d0ed1ac2ef0a9e0bcd7c85c3",
+      "release_sha256": "2531860ca225ea56421fb912a06c79c298126535d0ed1ac2ef0a9e0bcd7c85c3"
+    },
+    "benchmark/benchmark_runner/system_prompt.py": {
+      "source_sha256": "595ab15c734dc92bc1961291862655b9f3a654d28b4e50adfe1ba18d4b0b5830",
+      "release_sha256": "595ab15c734dc92bc1961291862655b9f3a654d28b4e50adfe1ba18d4b0b5830"
+    },
+    "benchmark/benchmark_runner/clarification_guard.py": {
+      "source_sha256": "e1fcf57330cd33d9a88083c4c90d0ba0a5253bdb98b0c6e7b267f057f3e52dfb",
+      "release_sha256": "e1fcf57330cd33d9a88083c4c90d0ba0a5253bdb98b0c6e7b267f057f3e52dfb"
+    },
+    "benchmark/benchmark_runner/__init__.py": {
+      "source_sha256": "c53624ff202f2d303ab6afea5a433f3eea51023fa7f96b455cfccff9b8fb7853",
+      "release_sha256": "c53624ff202f2d303ab6afea5a433f3eea51023fa7f96b455cfccff9b8fb7853"
+    },
+    "benchmark/services/__init__.py": {
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "release_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "benchmark/services/field_gated.py": {
+      "source_sha256": "de9723f1268ea3cb456e35e7bce289b0ee7cc2c2c48f8747f69a55a7229c1e5c",
+      "release_sha256": "de9723f1268ea3cb456e35e7bce289b0ee7cc2c2c48f8747f69a55a7229c1e5c"
+    },
+    "benchmark/services/checklist_items.py": {
+      "source_sha256": "91d13fc3e5886226e887221b71fc4f2fafd14b6091ec795966fb4b13aac3a625",
+      "release_sha256": "91d13fc3e5886226e887221b71fc4f2fafd14b6091ec795966fb4b13aac3a625"
+    },
+    "benchmark/services/tool_support.py": {
+      "source_sha256": "89451e1e7c721e83cc0fa09834f0cda68c713c8df86e9b21014246210cdfb346",
+      "release_sha256": "89451e1e7c721e83cc0fa09834f0cda68c713c8df86e9b21014246210cdfb346"
+    },
+    "benchmark/services/fixtures.py": {
+      "source_sha256": "6690963c8ffbde72c57d40cff1b83187aea653552eef6bd9db5330912d4d5636",
+      "release_sha256": "6690963c8ffbde72c57d40cff1b83187aea653552eef6bd9db5330912d4d5636"
+    },
+    "benchmark/services/platform_registry.py": {
+      "source_sha256": "01ae89fa5653648257033406d36a46e22ab26f0227a75750c7d6c7149a8d335c",
+      "release_sha256": "01ae89fa5653648257033406d36a46e22ab26f0227a75750c7d6c7149a8d335c"
+    },
+    "benchmark/services/task_definition.py": {
+      "source_sha256": "92376f3514122d5b8f7c63e743664101ed5b8b7a0eaffbe31bfd09f9f49acde1",
+      "release_sha256": "92376f3514122d5b8f7c63e743664101ed5b8b7a0eaffbe31bfd09f9f49acde1"
+    },
+    "benchmark/services/runtime_environment.py": {
+      "source_sha256": "1d7e3fca583b29533263faefa6a95b92120edadd40305c83660185ed8bdf4123",
+      "release_sha256": "1d7e3fca583b29533263faefa6a95b92120edadd40305c83660185ed8bdf4123"
+    },
+    "benchmark/services/process_cleanup.py": {
+      "source_sha256": "6859d1c6aecb7e87dee6a17bd560605f1e870c0fd4f33ede5a1801d47df94b28",
+      "release_sha256": "6859d1c6aecb7e87dee6a17bd560605f1e870c0fd4f33ede5a1801d47df94b28"
+    },
+    "benchmark/services/episode.py": {
+      "source_sha256": "52cebebbfe126ff00de99368293e73f0ff1f228f259e3f053027ce5983f13fae",
+      "release_sha256": "52cebebbfe126ff00de99368293e73f0ff1f228f259e3f053027ce5983f13fae"
+    },
+    "benchmark/services/tool_schema.py": {
+      "source_sha256": "91113f18549c99360aab25d931c72e8c1dad647c7c5e4861d69abe553980b50f",
+      "release_sha256": "91113f18549c99360aab25d931c72e8c1dad647c7c5e4861d69abe553980b50f"
+    },
+    "benchmark/services/history_context.py": {
+      "source_sha256": "db46a3a9659dfcf9befdc458449bbb2771f2683a816c6896aab848209d897146",
+      "release_sha256": "db46a3a9659dfcf9befdc458449bbb2771f2683a816c6896aab848209d897146"
+    },
+    "benchmark/services/archive_entries.py": {
+      "source_sha256": "e20a8d96dac7c0c8ede5fcc06df435a86051e5424cf491bd658cf849cd2489e7",
+      "release_sha256": "e20a8d96dac7c0c8ede5fcc06df435a86051e5424cf491bd658cf849cd2489e7"
+    },
+    "benchmark/services/local_tools.py": {
+      "source_sha256": "8f5e365a272e415a67ae816ae4d557bdaffc8570d261dba8e890232f36f09326",
+      "release_sha256": "8f5e365a272e415a67ae816ae4d557bdaffc8570d261dba8e890232f36f09326"
+    },
+    "benchmark/services/api.py": {
+      "source_sha256": "c11a7dccf6cd1b803c9bb24564108db0b6bd7974c4dac8e152b558a3fd8ea36d",
+      "release_sha256": "c11a7dccf6cd1b803c9bb24564108db0b6bd7974c4dac8e152b558a3fd8ea36d"
+    },
+    "benchmark/services/simulator_common.py": {
+      "source_sha256": "af213338b6c2bdab6ba793e678d4b69b863a27e99af890d85949150cd8090091",
+      "release_sha256": "af213338b6c2bdab6ba793e678d4b69b863a27e99af890d85949150cd8090091"
+    },
+    "benchmark/services/instruction_user_simulator.py": {
+      "source_sha256": "ed967e629d38f77ba2aabd4619026c41f23e0fa673d81d0ebf492ab515d75fcb",
+      "release_sha256": "ed967e629d38f77ba2aabd4619026c41f23e0fa673d81d0ebf492ab515d75fcb"
+    },
+    "benchmark/services/service_manager.py": {
+      "source_sha256": "5d0175be4faebd9bbbb975b1c4d55e96baca7b732cdb3065aadc34fcf45eeb4e",
+      "release_sha256": "5d0175be4faebd9bbbb975b1c4d55e96baca7b732cdb3065aadc34fcf45eeb4e"
+    },
+    "benchmark/services/booking_time.py": {
+      "source_sha256": "296249275ddbb4a626c696b640022845b7b5692f880763b47ba81b4074db2c90",
+      "release_sha256": "296249275ddbb4a626c696b640022845b7b5692f880763b47ba81b4074db2c90"
+    },
+    "benchmark/services/http_compression.py": {
+      "source_sha256": "b197bcc9eabfd9dac665c70ab2ffb3af2246f00aa524ace7857497ddad4ef060",
+      "release_sha256": "b197bcc9eabfd9dac665c70ab2ffb3af2246f00aa524ace7857497ddad4ef060"
+    },
+    "benchmark/services/image_transport.py": {
+      "source_sha256": "8a35d5da20ed41bd3f700dadda0e01556240bc23e08c800f3a5bdbd4b7db3f53",
+      "release_sha256": "8a35d5da20ed41bd3f700dadda0e01556240bc23e08c800f3a5bdbd4b7db3f53"
+    },
+    "benchmark/services/mock_services/delivery.py": {
+      "source_sha256": "ae95468d9d5f2f1dea6e18e6a50c5e5c6c48d2ddfaa1e56e5a0719adfed4f70d",
+      "release_sha256": "ae95468d9d5f2f1dea6e18e6a50c5e5c6c48d2ddfaa1e56e5a0719adfed4f70d"
+    },
+    "benchmark/services/mock_services/__init__.py": {
+      "source_sha256": "a60d85b6fc64f0f8a5968c3bf06073423ca140c5dc1243821ab82d91c9b8fceb",
+      "release_sha256": "a60d85b6fc64f0f8a5968c3bf06073423ca140c5dc1243821ab82d91c9b8fceb"
+    },
+    "benchmark/services/mock_services/business.py": {
+      "source_sha256": "ba69e0a7be2bc7ddecf03dcece1a3f2d3294cb7327e1b8c3581b2c6c2836aa07",
+      "release_sha256": "ba69e0a7be2bc7ddecf03dcece1a3f2d3294cb7327e1b8c3581b2c6c2836aa07"
+    },
+    "benchmark/services/mock_services/server.py": {
+      "source_sha256": "067c436ee24601ba2b9b2e5a96eebbaa716e14c98d7653df31e28cb546d9ba9e",
+      "release_sha256": "067c436ee24601ba2b9b2e5a96eebbaa716e14c98d7653df31e28cb546d9ba9e"
+    },
+    "benchmark/services/mock_services/moments.py": {
+      "source_sha256": "95a2743f72b407dd90446afc7560833c773a62cd3e6faa0e4b79ce833c894c45",
+      "release_sha256": "95a2743f72b407dd90446afc7560833c773a62cd3e6faa0e4b79ce833c894c45"
+    },
+    "benchmark/evaluator/__init__.py": {
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "release_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "benchmark/evaluator/caption.py": {
+      "source_sha256": "82e0e5ddb59bc6aad1425a76687b888742876f900cc9aba15fcb2f213e8a8cf2",
+      "release_sha256": "82e0e5ddb59bc6aad1425a76687b888742876f900cc9aba15fcb2f213e8a8cf2"
+    },
+    "benchmark/evaluator/datetime_compat.py": {
+      "source_sha256": "b8fb3e2217332ec0cdcddf2345f615a80500a7402cc0f4d162848d0145f42ad3",
+      "release_sha256": "b8fb3e2217332ec0cdcddf2345f615a80500a7402cc0f4d162848d0145f42ad3"
+    },
+    "benchmark/evaluator/atomic.py": {
+      "source_sha256": "f84a8fee384352cc467b00d8120a95609c84edd20502af961e8e0bbe0bc4810a",
+      "release_sha256": "f84a8fee384352cc467b00d8120a95609c84edd20502af961e8e0bbe0bc4810a"
+    },
+    "benchmark/evaluator/completion.py": {
+      "source_sha256": "1816401f34816e8d16869bd3dde1fb8969fe8c5e680c62b270163eb3bc50282e",
+      "release_sha256": "1816401f34816e8d16869bd3dde1fb8969fe8c5e680c62b270163eb3bc50282e"
+    },
+    "benchmark/evaluator/evaluate.py": {
+      "source_sha256": "402d179c29984a40bfebd7a236fb2321aeb4797685af72e63d3a91c764ec3f64",
+      "release_sha256": "402d179c29984a40bfebd7a236fb2321aeb4797685af72e63d3a91c764ec3f64"
+    },
+    "benchmark/evaluator/checks.py": {
+      "source_sha256": "0ba0244ac9d4a273410d02ca39e92e597678852fdf745478c4fb02abefb1ec61",
+      "release_sha256": "0ba0244ac9d4a273410d02ca39e92e597678852fdf745478c4fb02abefb1ec61"
+    },
+    "benchmark/evaluator/interaction_checks.py": {
+      "source_sha256": "598d53b681eaf70d5a08f3b544e49d89fc17a5750f2d444641f136be68ad5215",
+      "release_sha256": "598d53b681eaf70d5a08f3b544e49d89fc17a5750f2d444641f136be68ad5215"
+    },
+    "benchmark/evaluator/contracts.py": {
+      "source_sha256": "5f39d900355fd5824aa913a60f15eb6b6d1048f48d6195a09555324ffb321b2a",
+      "release_sha256": "5f39d900355fd5824aa913a60f15eb6b6d1048f48d6195a09555324ffb321b2a"
+    },
+    "benchmark/evaluator/dimensions.py": {
+      "source_sha256": "2d3f8e73a6f5625a75aeccb0775953540878421da940daddb7c4f58759793020",
+      "release_sha256": "2d3f8e73a6f5625a75aeccb0775953540878421da940daddb7c4f58759793020"
+    },
+    "benchmark/evaluator/grading.py": {
+      "source_sha256": "533326cf0e4431f82bee32b1c85f602fa5a5899557a437e42119f54d52183383",
+      "release_sha256": "533326cf0e4431f82bee32b1c85f602fa5a5899557a437e42119f54d52183383"
+    },
+    "benchmark/evaluator/photo_targets.py": {
+      "source_sha256": "70831f9bbd36ced8f7f9a5c1f363c8af1ecc2bdfb68fdfcd476c486a1cdec646",
+      "release_sha256": "70831f9bbd36ced8f7f9a5c1f363c8af1ecc2bdfb68fdfcd476c486a1cdec646"
+    },
+    "benchmark/evaluator/judge.py": {
+      "source_sha256": "6cd088c0214519e69f75f438582fe07f2dae3ec508ee44818fe3b0ba4bc52100",
+      "release_sha256": "6cd088c0214519e69f75f438582fe07f2dae3ec508ee44818fe3b0ba4bc52100"
+    },
+    "benchmark/evaluator/visual_check_registry.json": {
+      "source_sha256": "987b95b4b6150f258431a19799f2ad95a9f8e163f4b6e7a925054dcebeb516fb",
+      "release_sha256": "987b95b4b6150f258431a19799f2ad95a9f8e163f4b6e7a925054dcebeb516fb"
+    },
+    "benchmark/evaluator/visual_policy.py": {
+      "source_sha256": "9954ede5ed4e690d38c44b1eb70e66a02a05908bdd98db03012413721476ed1d",
+      "release_sha256": "9954ede5ed4e690d38c44b1eb70e66a02a05908bdd98db03012413721476ed1d"
+    },
+    "benchmark/evaluator/visual_evidence.py": {
+      "source_sha256": "1ee6064729d2d1f81a7e2593e7112842155ebd66ed2a6523e447c6bddf207b30",
+      "release_sha256": "1ee6064729d2d1f81a7e2593e7112842155ebd66ed2a6523e447c6bddf207b30"
+    },
+    "benchmark/evaluator/grader_projection.py": {
+      "source_sha256": "af51ef0feb456822f82ca5bd90e332a2cde87e71641a8ab8fd6cbea0980b2520",
+      "release_sha256": "af51ef0feb456822f82ca5bd90e332a2cde87e71641a8ab8fd6cbea0980b2520"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/business_mcp.py": {
+      "source_sha256": "ac09fa015effc33939c55a8737f7de4178a000e3cf3a8d981459cf7848ccbf0a",
+      "release_sha256": "ac09fa015effc33939c55a8737f7de4178a000e3cf3a8d981459cf7848ccbf0a"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/launcher.py": {
+      "source_sha256": "1c8c6959d6e8f7e22ac12b7211a39ecc7282fc6fe056d2b2c2b271a57ccd5478",
+      "release_sha256": "1c8c6959d6e8f7e22ac12b7211a39ecc7282fc6fe056d2b2c2b271a57ccd5478"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/sandbox.py": {
+      "source_sha256": "e926ce3088868e8f8e6a2cc7647e197139806a461cc56e44c7c1e0205b1ff52e",
+      "release_sha256": "e8a041c6e397a094a92061f176d353de6055e122d27b276a22f40abb31461183"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/offline.py": {
+      "source_sha256": "ed693c8eea2fb87974c464208ac4bb8eab767447c360305a9e1ef83905c52bfd",
+      "release_sha256": "85902a738cc7a704e9f860d7e98c0978a6bb895cf24d347ac3e0920b7effec6d"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/transport.py": {
+      "source_sha256": "91ab3faae92922512ac1433c7f909b289179097c82d8d52fd85437903bbc33a6",
+      "release_sha256": "91ab3faae92922512ac1433c7f909b289179097c82d8d52fd85437903bbc33a6"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/drivers.py": {
+      "source_sha256": "5695a0d1b1ca4a09bdefd2f54d4c646324995fa4a2a0ee65a6fd70795d4e8caa",
+      "release_sha256": "5695a0d1b1ca4a09bdefd2f54d4c646324995fa4a2a0ee65a6fd70795d4e8caa"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/cli.py": {
+      "source_sha256": "b6a9c527f95a9335b5c7a3baa996c5d40856d1f32e2af085fca360441d462da3",
+      "release_sha256": "b6a9c527f95a9335b5c7a3baa996c5d40856d1f32e2af085fca360441d462da3"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/session.py": {
+      "source_sha256": "c452e866066284334a303bd7cd5d75b7121ce1da05a3d3f45ea45498a742df61",
+      "release_sha256": "c452e866066284334a303bd7cd5d75b7121ce1da05a3d3f45ea45498a742df61"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/__init__.py": {
+      "source_sha256": "233ba2db8e160503d2f1d1c45901adcf2eb972b943c7421ce186be9042ad572e",
+      "release_sha256": "233ba2db8e160503d2f1d1c45901adcf2eb972b943c7421ce186be9042ad572e"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/fixture.py": {
+      "source_sha256": "95d40d12df3cc3a51eba00ef8030cfd62c072ccff1dd7048fe02a96770a318a4",
+      "release_sha256": "95d40d12df3cc3a51eba00ef8030cfd62c072ccff1dd7048fe02a96770a318a4"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/coordinator.py": {
+      "source_sha256": "f0697a629037027b0172a3607c56a44a1d5a253a3cc3cddede1eebfc8a7ab88f",
+      "release_sha256": "f0697a629037027b0172a3607c56a44a1d5a253a3cc3cddede1eebfc8a7ab88f"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/config.py": {
+      "source_sha256": "9a44d9d4a78518a2366a99bf26cc76b26f967271a323b2aaf12c422397d655a2",
+      "release_sha256": "b09344ff66b292c5f9eb435387d4471b5f06c9182dbeb494b65f48ba63a242dc"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/openclaw_runtime.py": {
+      "source_sha256": "403dfdd3cb94c4517f05eee5c1376fbc80fab6f8967bb7a28e7bb41165ba9336",
+      "release_sha256": "ce1c5690e01753281d543871cc58fa194cc8670d42a13fb09e52e78543b69121"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/gvisor.py": {
+      "source_sha256": "b2c48758e341d39a68f8a5309591b390a200c49f6ac21300deafad07743c9e52",
+      "release_sha256": "6ed5c4db272e5fbfa9d16fe512c7b2fc26f305c461b8ca3b1411c214aedee36c"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/private_tmpfs.py": {
+      "source_sha256": "1abbe89d685ef70def022f348e6cc10efa24a83a565fa9b066488738f8fd0449",
+      "release_sha256": "6e09a3d5c27df5bbe6f3f2c7639ccb3e71d035f72a58589244b8c5796d1c969c"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/opencode_runtime.py": {
+      "source_sha256": "dd6625a32742d2bb057a59a2d1338eebf6b55808521177873fb663ce6c01dba4",
+      "release_sha256": "dd6625a32742d2bb057a59a2d1338eebf6b55808521177873fb663ce6c01dba4"
+    },
+    "harness/camact_multi_harness_v1/camact_multi/deepseek_runtime.py": {
+      "source_sha256": "8aefcae289a57ae048f71e6cffdef4a7970a8c87b2a607c931c31e3f1e0970b1",
+      "release_sha256": "8aefcae289a57ae048f71e6cffdef4a7970a8c87b2a607c931c31e3f1e0970b1"
+    },
+    "harness/claude code/claude_code_harness/core.py": {
+      "source_sha256": "02750d511653ad35714b4a4cbd02d967f4232748cfdbe128fffdc058a40e9d30",
+      "release_sha256": "02750d511653ad35714b4a4cbd02d967f4232748cfdbe128fffdc058a40e9d30"
+    },
+    "harness/claude code/claude_code_harness/mcp_server.py": {
+      "source_sha256": "23842e068d76be69888add9cad6ced9592ae873f39c2942bcb564aad87a83911",
+      "release_sha256": "23842e068d76be69888add9cad6ced9592ae873f39c2942bcb564aad87a83911"
+    },
+    "harness/claude code/claude_code_harness/adapter.py": {
+      "source_sha256": "51169128a0aab2e9e29c10b2eb03046ec7f4e981a38896cbe0f00bca5054a4c0",
+      "release_sha256": "51169128a0aab2e9e29c10b2eb03046ec7f4e981a38896cbe0f00bca5054a4c0"
+    },
+    "harness/claude code/claude_code_harness/cli.py": {
+      "source_sha256": "d2dab09207aa5da9186b6b46177a50f485e9e308e438e7dd489272189441f335",
+      "release_sha256": "d2dab09207aa5da9186b6b46177a50f485e9e308e438e7dd489272189441f335"
+    },
+    "harness/claude code/claude_code_harness/tool_profiles.py": {
+      "source_sha256": "b057a4af71954a6ef9e243604b1d53bc5f6265494cf4f25f362dc6e878b024c1",
+      "release_sha256": "b057a4af71954a6ef9e243604b1d53bc5f6265494cf4f25f362dc6e878b024c1"
+    },
+    "harness/claude code/claude_code_harness/native_runner.py": {
+      "source_sha256": "a6eded1080b4e2a47fddf5b23b6d3793335f1ab65c1617e30ae2847166a39a99",
+      "release_sha256": "4d9c6effb109272b53d184ae5060ad01f366266662430fa05b99f6dda2ab166b"
+    },
+    "harness/claude code/claude_code_harness/resume.py": {
+      "source_sha256": "7429847d28a2e3bbd691b1e2a4ef6d7dcb2da6cdf23c515e821b602514538b0d",
+      "release_sha256": "7429847d28a2e3bbd691b1e2a4ef6d7dcb2da6cdf23c515e821b602514538b0d"
+    },
+    "harness/claude code/claude_code_harness/sandbox_transport.py": {
+      "source_sha256": "51cc3ccc14fcc278af69ba298cda9e1779c39eb9afd67149014fca2e0ffaeec9",
+      "release_sha256": "51cc3ccc14fcc278af69ba298cda9e1779c39eb9afd67149014fca2e0ffaeec9"
+    },
+    "harness/claude code/claude_code_harness/runner.py": {
+      "source_sha256": "05a27afa387581802d79888a28c4ea6c736635dc5f6c8e8def0ba395017f8cca",
+      "release_sha256": "05a27afa387581802d79888a28c4ea6c736635dc5f6c8e8def0ba395017f8cca"
+    },
+    "harness/claude code/claude_code_harness/sandbox_launcher.py": {
+      "source_sha256": "2709fe458a8f213e1d2e2a43bde7eb672cb2d2b35de4d3c75fa61c099a73da21",
+      "release_sha256": "2709fe458a8f213e1d2e2a43bde7eb672cb2d2b35de4d3c75fa61c099a73da21"
+    },
+    "harness/claude code/claude_code_harness/provider_bridge.py": {
+      "source_sha256": "3809f6ad6293aa323ef25d927305d976a7c797bb9cc1e4fd0119557a2a3eae92",
+      "release_sha256": "3809f6ad6293aa323ef25d927305d976a7c797bb9cc1e4fd0119557a2a3eae92"
+    },
+    "harness/claude code/claude_code_harness/__init__.py": {
+      "source_sha256": "7977f10856a35256c80566ae304fb80e483d29a10b3c0a6a920a35ba9f3adef5",
+      "release_sha256": "7977f10856a35256c80566ae304fb80e483d29a10b3c0a6a920a35ba9f3adef5"
+    },
+    "harness/claude code/claude_code_harness/native_adapter.py": {
+      "source_sha256": "975781733e5bd688b664655ade2b1589aee95b829fe3d58e5037915cb1378d6b",
+      "release_sha256": "975781733e5bd688b664655ade2b1589aee95b829fe3d58e5037915cb1378d6b"
+    },
+    "harness/claude code/claude_code_harness/execution_limits.py": {
+      "source_sha256": "40a85fd7d718e5c360763331a759bbc6926bafa2bfcd037cd4291e091578c854",
+      "release_sha256": "40a85fd7d718e5c360763331a759bbc6926bafa2bfcd037cd4291e091578c854"
+    },
+    "harness/claude code/claude_code_harness/anthropic_completion.py": {
+      "source_sha256": "9e59bdbb4c7b9835efdb7f0dd8929c322564e33193b62be57ed16250810eee21",
+      "release_sha256": "9e59bdbb4c7b9835efdb7f0dd8929c322564e33193b62be57ed16250810eee21"
+    },
+    "harness/baseline harness/camact_harness/__main__.py": {
+      "source_sha256": "7fdbf61a4e8ae8e32f347c830a0281176d128fed3b3225e70445e5f0f0b24877",
+      "release_sha256": "7fdbf61a4e8ae8e32f347c830a0281176d128fed3b3225e70445e5f0f0b24877"
+    },
+    "harness/baseline harness/camact_harness/__init__.py": {
+      "source_sha256": "c8554138fc1f19644383b49545c357f48c5768a890bd3c791b0221ca20bcbcac",
+      "release_sha256": "c8554138fc1f19644383b49545c357f48c5768a890bd3c791b0221ca20bcbcac"
+    },
+    "harness/baseline harness/baseline_harness/visual_wire.py": {
+      "source_sha256": "500bafa1992b59d68c7dc7f42de212b38306c363dd8c6de0a1249ec80151681f",
+      "release_sha256": "500bafa1992b59d68c7dc7f42de212b38306c363dd8c6de0a1249ec80151681f"
+    },
+    "harness/baseline harness/baseline_harness/__main__.py": {
+      "source_sha256": "2cdd23d4f5cd6c3b3e4cb690ad16d560637767b9ca5b2a3cf129fcc0a5ebc82b",
+      "release_sha256": "2cdd23d4f5cd6c3b3e4cb690ad16d560637767b9ca5b2a3cf129fcc0a5ebc82b"
+    },
+    "harness/baseline harness/baseline_harness/__init__.py": {
+      "source_sha256": "1ec8145e058b19227462b9efa03242288d4010c0780ef4565369e6cd188f6acb",
+      "release_sha256": "1ec8145e058b19227462b9efa03242288d4010c0780ef4565369e6cd188f6acb"
+    },
+    "harness/baseline harness/baseline_harness/observed_runner.py": {
+      "source_sha256": "359a3baf12bbd7b171e60f314e7071b7a48d008dca5f1f021d902e850b04346b",
+      "release_sha256": "359a3baf12bbd7b171e60f314e7071b7a48d008dca5f1f021d902e850b04346b"
+    },
+    "harness/baseline harness/baseline_harness/cli.py": {
+      "source_sha256": "e983e6f4e197f256f04d9970484953b6a79cf48efade4b67cd6a911cbaf88ed0",
+      "release_sha256": "e983e6f4e197f256f04d9970484953b6a79cf48efade4b67cd6a911cbaf88ed0"
+    },
+    "harness/camact_compatibility_v2/multiturn.py": {
+      "source_sha256": "412789e37b30c33ad04ef785c522934951a50ed0487e6ecf89c82e8d30880bbb",
+      "release_sha256": "412789e37b30c33ad04ef785c522934951a50ed0487e6ecf89c82e8d30880bbb"
+    },
+    "harness/camact_compatibility_v2/score_run.py": {
+      "source_sha256": "19a3fee1786bf876acbf6af8bf66ade4a2642e1347b93e47b328cf8ed5c13958",
+      "release_sha256": "19a3fee1786bf876acbf6af8bf66ade4a2642e1347b93e47b328cf8ed5c13958"
+    },
+    "harness/camact_compatibility_v2/__init__.py": {
+      "source_sha256": "d8b4d8e88643389b0259c881197d2763e591d2af93b7c4d6de2ceb3322c4dace",
+      "release_sha256": "d8b4d8e88643389b0259c881197d2763e591d2af93b7c4d6de2ceb3322c4dace"
+    },
+    "harness/camact_compatibility_v2/artifacts.py": {
+      "source_sha256": "7ff55e73638c677392ab1031ceaeebf7df38ef07bfc2b10b747cdf8de790e062",
+      "release_sha256": "7ff55e73638c677392ab1031ceaeebf7df38ef07bfc2b10b747cdf8de790e062"
+    },
+    "harness/camact_compatibility_v2/terminal.py": {
+      "source_sha256": "6d2921277ffec7811afa6c346d2f8cbf6fb7d068f5735b1cf9e066e0fa40c70d",
+      "release_sha256": "6d2921277ffec7811afa6c346d2f8cbf6fb7d068f5735b1cf9e066e0fa40c70d"
+    },
+    "harness/camact_compatibility_v2/roles.py": {
+      "source_sha256": "0e0d1895e06ff7cf3a2256f0a22f321051644459fb7cdde1a76093a5760fe8d7",
+      "release_sha256": "0e0d1895e06ff7cf3a2256f0a22f321051644459fb7cdde1a76093a5760fe8d7"
+    },
+    "harness/camact_token_usage_v1/accounting.py": {
+      "source_sha256": "27481faf4b4ba224c8d5fce860ce9ffce7713494df5392fdc6d8308f5e5046b3",
+      "release_sha256": "27481faf4b4ba224c8d5fce860ce9ffce7713494df5392fdc6d8308f5e5046b3"
+    },
+    "harness/camact_token_usage_v1/profiles.py": {
+      "source_sha256": "d0c8a0a8ce10efc7a6edf2c1cb2d9f3d21790795c212a9db651a9b02d43eaf29",
+      "release_sha256": "d0c8a0a8ce10efc7a6edf2c1cb2d9f3d21790795c212a9db651a9b02d43eaf29"
+    },
+    "harness/camact_token_usage_v1/report.py": {
+      "source_sha256": "a8101b7a05e8e8bd4645de41ccb832adecea7fe8f63a66f5d00fd33f2b5ec93f",
+      "release_sha256": "a8101b7a05e8e8bd4645de41ccb832adecea7fe8f63a66f5d00fd33f2b5ec93f"
+    },
+    "harness/camact_token_usage_v1/collector.py": {
+      "source_sha256": "7fe22b42f844040beae81f14274718915b657b2c9e4403427eef9c00e21d43a0",
+      "release_sha256": "7fe22b42f844040beae81f14274718915b657b2c9e4403427eef9c00e21d43a0"
+    },
+    "harness/camact_token_usage_v1/adapters.py": {
+      "source_sha256": "5d0e81b237a46d45b809cb53eca49ce2cb4a1a36185242ff52fbdbb0fec18e2a",
+      "release_sha256": "5d0e81b237a46d45b809cb53eca49ce2cb4a1a36185242ff52fbdbb0fec18e2a"
+    },
+    "harness/camact_token_usage_v1/__init__.py": {
+      "source_sha256": "f8ce62481132616c4c4dc32e06573cdd2b3835e3741674667bfd5309c6504ef0",
+      "release_sha256": "f8ce62481132616c4c4dc32e06573cdd2b3835e3741674667bfd5309c6504ef0"
+    },
+    "harness/camact_token_usage_v1/http.py": {
+      "source_sha256": "1299112d74f229207f732e384584e848e22683d6cc99142a237734213f701a1d",
+      "release_sha256": "1299112d74f229207f732e384584e848e22683d6cc99142a237734213f701a1d"
+    },
+    "harness/camact_token_usage_v1/integration.py": {
+      "source_sha256": "4d77b86c8cb4b5917b11581adcd341d861f975d65ab36041d3230c792b013102",
+      "release_sha256": "4d77b86c8cb4b5917b11581adcd341d861f975d65ab36041d3230c792b013102"
+    },
+    "harness/camact_token_usage_v1/normalization.py": {
+      "source_sha256": "c26134e74cac48d6ac04b58cadf70d2d1454f181c0b92b6725dd6d006bafd60c",
+      "release_sha256": "c26134e74cac48d6ac04b58cadf70d2d1454f181c0b92b6725dd6d006bafd60c"
+    },
+    "harness/camact_token_usage_v1/test_normalization.py": {
+      "source_sha256": "75b975f95a76378a93f3f89e4ef7e4fd50fafa81401ab55581cb0e2b82bdf5da",
+      "release_sha256": "75b975f95a76378a93f3f89e4ef7e4fd50fafa81401ab55581cb0e2b82bdf5da"
+    },
+    "harness/camact_token_usage_v1/unified_report.py": {
+      "source_sha256": "b396704e6ed98d50b29f45e6608ddf5c11b803fe6811ed20e7296a202a4d65ba",
+      "release_sha256": "b396704e6ed98d50b29f45e6608ddf5c11b803fe6811ed20e7296a202a4d65ba"
+    },
+    "harness/camact_token_usage_v1/test_protocol_regressions.py": {
+      "source_sha256": "9b08b89fe00b81993b16d390537bd69f40e5d92de0b02df05856a241e6c5bbf1",
+      "release_sha256": "9b08b89fe00b81993b16d390537bd69f40e5d92de0b02df05856a241e6c5bbf1"
+    },
+    "harness/camact_token_usage_v1/test_unified_independent.py": {
+      "source_sha256": "42f01d4cfc34839428d388ac3a64ce326d196f00cee131db95d0178400298c21",
+      "release_sha256": "42f01d4cfc34839428d388ac3a64ce326d196f00cee131db95d0178400298c21"
+    },
+    "harness/camact_token_usage_v1/native_identity.py": {
+      "source_sha256": "3c8d7d5180c09e0a088ebfc95a9d732baff8d9f710aaa6d0ea19ee5b505b8017",
+      "release_sha256": "3c8d7d5180c09e0a088ebfc95a9d732baff8d9f710aaa6d0ea19ee5b505b8017"
+    },
+    "harness/camact_token_usage_v1/test_native_identity.py": {
+      "source_sha256": "0bfe9c7c67d189da225e869fec1d5b72d8efc1ea0b3b8d1e6b4dbc23e5bb0692",
+      "release_sha256": "0bfe9c7c67d189da225e869fec1d5b72d8efc1ea0b3b8d1e6b4dbc23e5bb0692"
+    },
+    "harness/camact_token_usage_v1/recover_history.py": {
+      "source_sha256": "f319241f6aaca43f6953a8cd2d0bb2521c94cd3a2def2f5754cff3369c40124a",
+      "release_sha256": "f319241f6aaca43f6953a8cd2d0bb2521c94cd3a2def2f5754cff3369c40124a"
+    },
+    "harness/camact_token_usage_v1/test_recover_history.py": {
+      "source_sha256": "b0390c8f1260b0bfedc3217e5d65e1bd34f694e6dc7208f45daf3571c949e12f",
+      "release_sha256": "b0390c8f1260b0bfedc3217e5d65e1bd34f694e6dc7208f45daf3571c949e12f"
+    },
+    "harness/camact_token_usage_v1/attempt_recovery.py": {
+      "source_sha256": "fc39818ed0efa86f02898cd1f12ed8a36c53198f87fcf133344dc12639951431",
+      "release_sha256": "fc39818ed0efa86f02898cd1f12ed8a36c53198f87fcf133344dc12639951431"
+    },
+    "harness/camact_token_usage_v1/test_attempt_recovery.py": {
+      "source_sha256": "80ac88b2810247d04e7141ab460d1cdaf3718a0bf2e8063d42172ab2e6b2b05b",
+      "release_sha256": "80ac88b2810247d04e7141ab460d1cdaf3718a0bf2e8063d42172ab2e6b2b05b"
+    },
+    "harness/camact_token_usage_v1/audit_attempts.py": {
+      "source_sha256": "a2b6a8d797e9c49012d897c882456842fbb262ddadf18e7bb1f53826dfd267c2",
+      "release_sha256": "a2b6a8d797e9c49012d897c882456842fbb262ddadf18e7bb1f53826dfd267c2"
+    },
+    "harness/camact_token_usage_v1/test_audit_attempts.py": {
+      "source_sha256": "dc787baac75655a444b3d682f72cd4229252af3c3f36b048b90b348a21951f75",
+      "release_sha256": "dc787baac75655a444b3d682f72cd4229252af3c3f36b048b90b348a21951f75"
+    },
+    "harness/camact_token_usage_v1/completeness.py": {
+      "source_sha256": "82c3c54952433a74e4c0c69bad56a1d7be57b14abf2b6edadda963a9f6001538",
+      "release_sha256": "82c3c54952433a74e4c0c69bad56a1d7be57b14abf2b6edadda963a9f6001538"
+    },
+    "harness/camact_token_usage_v1/test_completeness.py": {
+      "source_sha256": "fe58c8122f3c1a763abbb93b860c501bf5e61d5d245459237d8628acbd7d1f81",
+      "release_sha256": "fe58c8122f3c1a763abbb93b860c501bf5e61d5d245459237d8628acbd7d1f81"
+    },
+    "harness/camact_token_usage_v1/backfill_completeness.py": {
+      "source_sha256": "e20b76432f3fd84553e12a7b803338c00c2a1418d54c813829812043afde2e3d",
+      "release_sha256": "e20b76432f3fd84553e12a7b803338c00c2a1418d54c813829812043afde2e3d"
+    },
+    "harness/camact_token_usage_v1/audit_usage_gaps.py": {
+      "source_sha256": "71915cef1f2318c6cdaa4bc74e391bacc83bcba1b87824038821f8ca2767332e",
+      "release_sha256": "71915cef1f2318c6cdaa4bc74e391bacc83bcba1b87824038821f8ca2767332e"
+    },
+    "harness/camact_prompt_parity_v1/sandbox.py": {
+      "source_sha256": "11cb7870503b5536356328fb2b6b6e1756066b1b35ba79a85363e4c925e686c7",
+      "release_sha256": "11cb7870503b5536356328fb2b6b6e1756066b1b35ba79a85363e4c925e686c7"
+    },
+    "harness/camact_prompt_parity_v1/policy.py": {
+      "source_sha256": "e9873352caa356bc34b2afa30128c6d3b458a67c4225b4386669130ac4fe74cb",
+      "release_sha256": "e9873352caa356bc34b2afa30128c6d3b458a67c4225b4386669130ac4fe74cb"
+    },
+    "harness/camact_prompt_parity_v1/__init__.py": {
+      "source_sha256": "3325fbe40759ebcf7e2e43b3f7d44b0168d8a9a458f6cf2673ab34eb76de239f",
+      "release_sha256": "3325fbe40759ebcf7e2e43b3f7d44b0168d8a9a458f6cf2673ab34eb76de239f"
+    },
+    "evaluation/camact_eval/schema.py": {
+      "source_sha256": "b318736c99bff7ea61e4f0c148df88663e85c890d998476a13ca192632a8ed16",
+      "release_sha256": "b318736c99bff7ea61e4f0c148df88663e85c890d998476a13ca192632a8ed16"
+    },
+    "evaluation/camact_eval/evaluator.py": {
+      "source_sha256": "e28be1cc79ad95711afda37e1577846f352a9d816ca78e491d461db4dece18d5",
+      "release_sha256": "e28be1cc79ad95711afda37e1577846f352a9d816ca78e491d461db4dece18d5"
+    },
+    "evaluation/camact_eval/__init__.py": {
+      "source_sha256": "22807fac50034e729dc6379d1544d27a83db4d4c4d7dbea88e1b6b033b0d63a3",
+      "release_sha256": "22807fac50034e729dc6379d1544d27a83db4d4c4d7dbea88e1b6b033b0d63a3"
+    },
+    "evaluation/camact_eval/report.py": {
+      "source_sha256": "4cd444ab4b35db605daa933c0ba41b8c1e20083fd07700633c032406e3b382aa",
+      "release_sha256": "4cd444ab4b35db605daa933c0ba41b8c1e20083fd07700633c032406e3b382aa"
+    },
+    "evaluation/camact_eval/measurement.py": {
+      "source_sha256": "927ba8458b62e486b0a01f5f0aeec7c25811d559cc68cd110f88534abe9086f5",
+      "release_sha256": "927ba8458b62e486b0a01f5f0aeec7c25811d559cc68cd110f88534abe9086f5"
+    },
+    "evaluation/camact_eval/adapters.py": {
+      "source_sha256": "3d1b7c57cc2bfc4704efda958ee5c69fea2c93d30152463b1b6cee549075338c",
+      "release_sha256": "3d1b7c57cc2bfc4704efda958ee5c69fea2c93d30152463b1b6cee549075338c"
+    },
+    "evaluation/camact_eval/environment.py": {
+      "source_sha256": "cf228d76ae26c26ff57dddce73bbc3227bf6d59ef503ded2830497060057475f",
+      "release_sha256": "cf228d76ae26c26ff57dddce73bbc3227bf6d59ef503ded2830497060057475f"
+    },
+    "evaluation/camact_eval/visual_capture.py": {
+      "source_sha256": "a7623b464961e327038258a1895ea3bc33e9e39592e2c1b5fd5aa4f48473c006",
+      "release_sha256": "a7623b464961e327038258a1895ea3bc33e9e39592e2c1b5fd5aa4f48473c006"
+    },
+    "evaluation/camact_eval/requirements-evaluator.lock": {
+      "source_sha256": "fc8e2a046c8af01c7a55a72b25263cace271e129be187686c12dc966b600f717",
+      "release_sha256": "fc8e2a046c8af01c7a55a72b25263cace271e129be187686c12dc966b600f717"
+    },
+    "evaluation/camact_eval/cli.py": {
+      "source_sha256": "0de05bf24eccb7c1efdebeac5366832e5e7a9d0525174d1f9d076cd651a8071d",
+      "release_sha256": "0de05bf24eccb7c1efdebeac5366832e5e7a9d0525174d1f9d076cd651a8071d"
+    },
+    "evaluation/camact_eval/aggregation.py": {
+      "source_sha256": "9ec05a3a335c4c79bfc9be2718e7e4aa3873f1c3e61b028d5cf55527e5a71fd1",
+      "release_sha256": "9ec05a3a335c4c79bfc9be2718e7e4aa3873f1c3e61b028d5cf55527e5a71fd1"
+    },
+    "evaluation/camact_eval/__main__.py": {
+      "source_sha256": "76fa916e93e0ae1a6c1bb51dcc0bcf289c014e9f760a47165f8a84401ccf41d7",
+      "release_sha256": "76fa916e93e0ae1a6c1bb51dcc0bcf289c014e9f760a47165f8a84401ccf41d7"
+    },
+    "evaluation/camact_eval/visual_provenance.py": {
+      "source_sha256": "1c1bffc5e855fb67d6083908b4283435800a3923af5e443306abdaf03469f352",
+      "release_sha256": "1c1bffc5e855fb67d6083908b4283435800a3923af5e443306abdaf03469f352"
+    },
+    "evaluation/camact_eval/visual_replay.cjs": {
+      "source_sha256": "b9e425e229daf04439a9369fef9c17b32e37c769fc653141757798a76eb9ef6a",
+      "release_sha256": "b9e425e229daf04439a9369fef9c17b32e37c769fc653141757798a76eb9ef6a"
+    },
+    "evaluation/camact_eval/visual_native_exact.cjs": {
+      "source_sha256": "32a725805a440e23bfb219e2f8d55e425b6da38b6169457522821d338840eb16",
+      "release_sha256": "32a725805a440e23bfb219e2f8d55e425b6da38b6169457522821d338840eb16"
+    },
+    "evaluation/camact_eval/visual_native_exact.py": {
+      "source_sha256": "1ca2a54d936eeb3a9fba4fd7dbb19a6cbf317d18b1a05530adb6e5c0f7f88571",
+      "release_sha256": "1ca2a54d936eeb3a9fba4fd7dbb19a6cbf317d18b1a05530adb6e5c0f7f88571"
+    },
+    "evaluation/camact_eval/native_codecs.json": {
+      "source_sha256": "c644e9e2384f72da14560fdaa60b38f74cc97dd5cab0887bf03e94c65cc4c4f6",
+      "release_sha256": "7e2195dee0ffe6605a85b01d9950d71350d7d583d660262fe7ac9c1fa70bbdb3"
+    },
+    "evaluation/camact_eval/visual_capture_legacy_v4.py": {
+      "source_sha256": "2aadccbc81e12f1341430dec0a4a609aa24297696918ad8b343fac0eb1f912ba",
+      "release_sha256": "2aadccbc81e12f1341430dec0a4a609aa24297696918ad8b343fac0eb1f912ba"
+    },
+    "evaluation/camact_eval/visual_opencode_exact.cjs": {
+      "source_sha256": "30c941acfdaafed536a98d1d1e7919f2de469b2126ba66c04d0a6f6bafcc4d90",
+      "release_sha256": "30c941acfdaafed536a98d1d1e7919f2de469b2126ba66c04d0a6f6bafcc4d90"
+    },
+    "camact_eval/__init__.py": {
+      "source_sha256": "c46aa6fcc470cfdb0e54472bfa13a44d0829744bf4c29d7989ad82e0abf052ba",
+      "release_sha256": "7b1c8858fcc353ea65322dadb6ac253c6e9f482fc6ad23b66afb7d884badfb34"
+    },
+    "camact_eval/__main__.py": {
+      "source_sha256": "60438cd900ac381ac5846e8127d1ac1defa31fd1792f444113c5fc4a6eb0bf12",
+      "release_sha256": "60438cd900ac381ac5846e8127d1ac1defa31fd1792f444113c5fc4a6eb0bf12"
+    },
+    "camact_harness/__init__.py": {
+      "source_sha256": "7aa4e067ac60696bc24fcd0d9e6e097530732a661ea0e7b504f068316f65eb3b",
+      "release_sha256": "7aa4e067ac60696bc24fcd0d9e6e097530732a661ea0e7b504f068316f65eb3b"
+    },
+    "evaluation/__init__.py": {
+      "source_sha256": "efbb5161f7606728045e4ad0d71e29b30d0bf7eaf545ece2144b9d10af2193b4",
+      "release_sha256": "efbb5161f7606728045e4ad0d71e29b30d0bf7eaf545ece2144b9d10af2193b4"
+    },
+    "deployment/full_benchmark.py": {
+      "source_sha256": "ce73bff8d4f62b761c0baa31372b15ec749cc4301e39ab37c344949699b1322a",
+      "release_sha256": "d130726a017fa3860bca4cb6968dec202183b63df7d30ac3881251e8cd252f6d"
+    },
+    "deployment/preflight_full_benchmark.py": {
+      "source_sha256": "f4c46aaafdf58c1c80d0698d7eb58590f4d6504c462450e1fa96937a37b9ac69",
+      "release_sha256": "974b6f2c2233a5b19868316d86e0f9f46b9930a503b0f53c4aeaada408270733"
+    },
+    "deployment/monitor_full_benchmark.py": {
+      "source_sha256": "5e948589d586dbf51d50f92727c6a9709b253e36e68f8f7490017445f6d5e362",
+      "release_sha256": "5e948589d586dbf51d50f92727c6a9709b253e36e68f8f7490017445f6d5e362"
+    },
+    "deployment/auto_harness_concurrency.py": {
+      "source_sha256": "e4ab18bf3f040c56486a4682faae54033d2e8c05419fd8aae5662274cd09396a",
+      "release_sha256": "e4ab18bf3f040c56486a4682faae54033d2e8c05419fd8aae5662274cd09396a"
+    },
+    "harness/camact_visual_provenance_v1/native_codex_replay/Cargo.toml": {
+      "source_sha256": "54c20b29b80a75bc974207ff24919939f61eed5ae95ee76635f29d78842ca2d3",
+      "release_sha256": "54c20b29b80a75bc974207ff24919939f61eed5ae95ee76635f29d78842ca2d3"
+    },
+    "harness/camact_visual_provenance_v1/native_codex_replay/Cargo.lock": {
+      "source_sha256": "cad5de8827790c6269f6d61be9fe326b0961a6e59f87f3c8ad181ce5b0c2817b",
+      "release_sha256": "cad5de8827790c6269f6d61be9fe326b0961a6e59f87f3c8ad181ce5b0c2817b"
+    },
+    "harness/camact_visual_provenance_v1/native_codex_replay/src/main.rs": {
+      "source_sha256": "e800e6a9bdae5ff3c272aa052e97c46524b5db9c113cc3be9db0d8c8427bf323",
+      "release_sha256": "e800e6a9bdae5ff3c272aa052e97c46524b5db9c113cc3be9db0d8c8427bf323"
+    }
+  },
+  "deployment_adaptations": [
+    "harness/camact_multi_harness_v1/camact_multi/sandbox.py",
+    "harness/camact_multi_harness_v1/camact_multi/offline.py",
+    "harness/camact_multi_harness_v1/camact_multi/config.py",
+    "harness/camact_multi_harness_v1/camact_multi/openclaw_runtime.py",
+    "harness/camact_multi_harness_v1/camact_multi/gvisor.py",
+    "harness/camact_multi_harness_v1/camact_multi/private_tmpfs.py",
+    "harness/claude code/claude_code_harness/native_runner.py",
+    "evaluation/camact_eval/native_codecs.json",
+    "camact_eval/__init__.py",
+    "deployment/full_benchmark.py",
+    "deployment/preflight_full_benchmark.py"
+  ],
+  "omitted_non_runtime_files": [
+    "harness/camact_token_usage_v1/accept_completeness.py"
+  ],
+  "generated_codec_registry_note": "Only generated Rust helper fingerprint/build provenance is refreshed by the pinned build; original evaluator rules and static codec inputs remain unchanged.",
+  "deployment_adaptation_notes": {
+    "harness/camact_multi_harness_v1/camact_multi/config.py": "Permit explicit contained CAMACT_RESULTS_ROOT output paths.",
+    "harness/camact_multi_harness_v1/camact_multi/gvisor.py": "Use Docker-compatible state paths and minimal trusted probe/guest environment; preserve gVisor isolation.",
+    "harness/camact_multi_harness_v1/camact_multi/private_tmpfs.py": "Recognize bounded private Compose tmpfs while retaining the OpenClaw HOME security gate.",
+    "harness/camact_multi_harness_v1/camact_multi/openclaw_runtime.py": "Run trusted gVisor preflight with an explicit minimal environment instead of inherited role credentials.",
+    "evaluation/camact_eval/native_codecs.json": "Regenerate compiled Codex replay helper fingerprint/build provenance with pinned build; static codec rules unchanged.",
+    "camact_eval/__init__.py": "Route submodule imports through canonical evaluator package when deployment shim is cached first.",
+    "deployment/full_benchmark.py": "Portable selected User/Harness scheduling and durable resume; retain existing executor/result/usage/scoring lifecycle.",
+    "deployment/preflight_full_benchmark.py": "Remove historical/private server preflight assumptions from release deployment helper.",
+    "harness/camact_multi_harness_v1/camact_multi/sandbox.py": "Replace historic user HOME exclusions with generic whole-host-root/HOME guards, retain read-only package roots and network isolation, remove unreachable personal Codex path specialcase.",
+    "harness/claude code/claude_code_harness/native_runner.py": "Generalize the whole-host-HOME runtime-root rejection without changing native Agent execution or gVisor behavior.",
+    "harness/camact_multi_harness_v1/camact_multi/offline.py": "Replace historical personal paths in negative fixture assertions with generic host-only sentinel paths."
+  }
+}

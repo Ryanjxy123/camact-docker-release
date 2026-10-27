@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+"""Host control entrypoint; every evaluation is executed by Docker Compose."""
+from pathlib import Path
+import argparse
+import datetime as dt
+import getpass
+import json
+import os
+import shutil
+import subprocess
+import sys
+import uuid
+
+ROOT = Path(__file__).resolve().parent
+
+
+def compose(*arguments, capture=False, data=None):
+    docker = os.environ.get('CAMACT_DOCKER', 'docker')
+    if not shutil.which(docker):
+        raise RuntimeError('未找到 Docker；请先按 README 安装 Docker Engine 和 Compose v2。')
+    cmd = [docker, 'compose', '--project-directory', str(ROOT), '-f', str(ROOT / 'compose.yaml'), *arguments]
+    result = subprocess.run(cmd, cwd=ROOT, text=True, input=data,
+                            capture_output=capture, env=os.environ)
+    if result.returncode:
+        raise RuntimeError('Docker Compose 操作失败，退出码 ' + str(result.returncode))
+    return result.stdout if capture else None
+
+
+def init():
+    for original, target in (('.env.example', '.env'), ('config/models.env.example', 'config/models.env')):
+        destination = ROOT / target
+        if not destination.exists():
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            with destination.open('x') as stream:
+                stream.write((ROOT / original).read_text())
+            destination.chmod(0o600)
+    # Resolve .env quotes, comments, variables and paths exactly as Compose
+    # does, requesting only the storage service's public mount configuration.
+    configuration = json.loads(compose('config', '--format', 'json', '--no-env-resolution', 'storage-init', capture=True))
+    mounts = {volume['target']: volume for volume in configuration['services']['storage-init']['volumes']}
+    for target in ('/var/lib/camact', '/secrets'):
+        volume = mounts[target]
+        if volume.get('type') != 'bind':
+            raise RuntimeError('持久化目录必须使用宿主机绑定挂载。')
+        folder = Path(volume['source'])
+        if not folder.is_absolute():
+            raise RuntimeError('Compose 未返回绝对存储路径。')
+        if folder.is_symlink():
+            raise RuntimeError('持久化根目录不能是符号链接。')
+        folder.mkdir(parents=True, exist_ok=True)
+    (ROOT / '.state').mkdir(exist_ok=True)
+
+
+def remember(run_id):
+    path = ROOT / '.state/last-run.json'
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps({'run_id': run_id}) + '\n')
+    temporary.replace(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('action', choices=('init', 'build', 'pull', 'check', 'download', 'run', 'resume', 'status', 'logs', 'secret'))
+    parser.add_argument('--run-id')
+    parser.add_argument('--detach', action='store_true')
+    args, remainder = parser.parse_known_args()
+    init()
+    if args.action == 'init':
+        print('已创建 .env、config/models.env 和宿主机存储根目录。请填写模型配置，构建/拉取镜像后用 camactctl secret 设置三个角色密钥。')
+        return
+    if args.action in ('build', 'pull'):
+        if args.action == 'build':
+            revision = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True, capture_output=True)
+            if revision.returncode == 0:
+                os.environ.setdefault('CAMACT_SOURCE_REVISION', revision.stdout.strip())
+            compose('build', 'runner', *remainder)
+        else:
+            compose('pull', 'runner', *remainder)
+        compose('--profile', 'tools', 'run', '--rm', '-T', 'storage-init')
+        return
+    if args.action == 'secret':
+        if len(remainder) != 1 or remainder[0] not in ('agent', 'judge', 'simulator'):
+            parser.error('secret 需要 agent、judge 或 simulator')
+        role = remainder[0]
+        value = getpass.getpass(role + ' API Key（不回显）: ')
+        if not value:
+            parser.error('密钥不能为空')
+        compose('--profile', 'tools', 'run', '--rm', '-T', 'storage-init', 'secret', role, data=value)
+        return
+    compose('--profile', 'tools', 'run', '--rm', '-T', 'storage-init')
+    if args.action == 'download':
+        compose('run', '--rm', '-T', '--entrypoint', 'python', 'runner', '-B', '-m', 'release.benchmark',
+                '--cache-root', '/var/lib/camact/benchmark', *remainder)
+        return
+    run_id = args.run_id
+    if args.action == 'run' and not run_id:
+        run_id = dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ-') + uuid.uuid4().hex[:8]
+    if args.action in ('resume', 'status', 'logs') and not run_id:
+        state = ROOT / '.state/last-run.json'
+        if not state.is_file():
+            parser.error('没有最近运行记录，请指定 --run-id')
+        run_id = json.loads(state.read_text())['run_id']
+    invocation = ['run', '--rm']
+    if args.detach:
+        if args.action not in ('run', 'resume'):
+            parser.error('--detach 仅用于 run/resume')
+        invocation += ['-d', '--name', 'camact-' + run_id]
+    else:
+        invocation += ['-T']
+    # Query the exact image selected by Compose, without reading model secrets.
+    image_name = compose('config', '--images', capture=True).strip().splitlines()[0]
+    digest = subprocess.run([os.environ.get('CAMACT_DOCKER', 'docker'), 'image', 'inspect', image_name,
+                             '--format', '{{.Id}}'], text=True, capture_output=True)
+    if digest.returncode == 0:
+        invocation += ['-e', 'CAMACT_IMAGE_DIGEST=' + digest.stdout.strip()]
+    command = [args.action, *(['--run-id', run_id] if run_id else []), *remainder]
+    if args.action in ('run', 'resume'):
+        remember(run_id)
+        print('Run ID: ' + run_id, flush=True)
+    compose(*invocation, 'runner', *command)
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (RuntimeError, OSError, ValueError) as exc:
+        print(str(exc), file=sys.stderr)
+        raise SystemExit(1)

@@ -1,0 +1,20 @@
+{
+  "upstream": "https://github.com/moby/profiles/blob/main/seccomp/default.json",
+  "upstream_sha256": "6416b47770785a41ac59073cdc77d9fe98517df2799dc83ef207e622de3053f6",
+  "added_syscalls": [
+    "chroot",
+    "clone",
+    "clone3",
+    "mount",
+    "pivot_root",
+    "process_vm_readv",
+    "process_vm_writev",
+    "ptrace",
+    "setns",
+    "umount",
+    "umount2",
+    "unshare"
+  ],
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "note": "Snapshot of standard Docker profile with only namespace and Systrap operations explicitly enabled. Container runs as unprivileged user with all capabilities dropped; no Docker socket."
+}

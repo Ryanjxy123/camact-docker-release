@@ -1,0 +1,54 @@
+name: camact
+services:
+  runner:
+    image: ${CAMACT_IMAGE:-camact:local}
+    build:
+      context: .
+      args:
+        VERSION: ${CAMACT_VERSION:-local}
+        SOURCE_REVISION: ${CAMACT_SOURCE_REVISION:-source-snapshot}
+    platform: linux/amd64
+    user: "10001:10001"
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+      - seccomp=./deploy/seccomp-gvisor.json
+    read_only: true
+    pids_limit: 4096
+    stop_grace_period: 60s
+    env_file: [./config/models.env]
+    environment:
+      CAMACT_DATA_ROOT: /var/lib/camact
+      CAMACT_OPENCLAW_TMPDIR: /run/camact/openclaw
+      CAMACT_IMAGE_DIGEST: ${CAMACT_IMAGE_DIGEST:-unavailable}
+      AGENT_API_KEY_FILE: /run/secrets/agent_api_key
+      JUDGE_API_KEY_FILE: /run/secrets/judge_api_key
+      SIMULATOR_API_KEY_FILE: /run/secrets/simulator_api_key
+    secrets: [agent_api_key, judge_api_key, simulator_api_key]
+    volumes:
+      - type: bind
+        source: ${CAMACT_DATA_DIR:-./.data}
+        target: /var/lib/camact
+    tmpfs:
+      - /run/camact:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
+      - /run/camact/openclaw:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700
+      - /tmp:rw,nosuid,nodev,size=512m,uid=10001,gid=10001,mode=1777
+  storage-init:
+    profiles: [tools]
+    image: ${CAMACT_IMAGE:-camact:local}
+    user: "0:0"
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER]
+    read_only: true
+    network_mode: none
+    entrypoint: [python, -B, /opt/camact/scripts/init-storage.py]
+    volumes:
+      - ${CAMACT_DATA_DIR:-./.data}:/var/lib/camact
+      - ${CAMACT_SECRETS_DIR:-./.secrets}:/secrets
+secrets:
+  agent_api_key:
+    file: ${CAMACT_SECRETS_DIR:-./.secrets}/agent_api_key
+  judge_api_key:
+    file: ${CAMACT_SECRETS_DIR:-./.secrets}/judge_api_key
+  simulator_api_key:
+    file: ${CAMACT_SECRETS_DIR:-./.secrets}/simulator_api_key

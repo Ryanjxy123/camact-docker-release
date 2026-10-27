@@ -1,0 +1,44 @@
+{
+  "schema_version": "camact.runtime_versions.v1",
+  "platform": "linux/amd64",
+  "node": {
+    "version": "24.14.0",
+    "url": "https://nodejs.org/dist/v24.14.0/node-v24.14.0-linux-x64.tar.xz",
+    "sha256": "41cd79bb7877c81605a9e68ec4c91547774f46a40c67a17e34d7179ef11729df"
+  },
+  "gvisor": {
+    "version": "20261012.0",
+    "url": "https://storage.googleapis.com/gvisor/releases/release/20261012.0/x86_64/gvisor.tar.bz2",
+    "sha512": "9606445eed5aedfcf05310e7ccef61d994089914c6622fc82624c24d2b18db1b2210f40e40a7be27b8b7772859de7d95c501b4eba66423053c960bf671377c5e"
+  },
+  "rust": {
+    "version": "1.90.0"
+  },
+  "cli": {
+    "claude": {
+      "package": "@anthropic-ai/claude-code",
+      "version": "2.1.160",
+      "executable": "claude"
+    },
+    "codex": {
+      "package": "@openai/codex",
+      "version": "0.147.0",
+      "executable": "codex"
+    },
+    "opencode": {
+      "package": "@opencode/cli",
+      "version": "2.0.32",
+      "executable": "opencode"
+    },
+    "deepseek": {
+      "package": "@deepseek-ai/dsh",
+      "version": "0.2.1-rc.2",
+      "executable": "dsh"
+    },
+    "openclaw": {
+      "package": "openclaw",
+      "version": "2026.6.11",
+      "executable": "openclaw"
+    }
+  }
+}

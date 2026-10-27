@@ -1,0 +1,12 @@
+[package]
+name = "camact-native-codex-image-replay"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+image = { version = "=0.25.9", default-features = false, features = ["jpeg"] }
+zune-jpeg = "=0.5.12"
+zune-core = "=0.5.1"
+
+[workspace]

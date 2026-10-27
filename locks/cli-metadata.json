@@ -1,0 +1,369 @@
+[
+  {
+    "package": "@anthropic-ai/claude-code",
+    "version": "2.1.160",
+    "source": "https://registry.npmjs.org/@anthropic-ai/claude-code/2.1.160",
+    "metadata": {
+      "name": "@anthropic-ai/claude-code",
+      "version": "2.1.160",
+      "engines": {
+        "node": ">=18.0.0"
+      },
+      "bin": {
+        "claude": "bin/claude.exe"
+      },
+      "dist": {
+        "shasum": "98bc18eb6599d920bc3057473fc9f758d74bd1ac",
+        "tarball": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.160.tgz",
+        "fileCount": 7,
+        "integrity": "sha512-CmavoORpVR3UC7dFVfnSla+/FFWvEfzjj/HjnlQ4OMYQcZeuAl+IJ6NmGEbLk9R/5I4MflZKxd7fcG1L1l9ZMQ==",
+        "signatures": [
+          {
+            "sig": "MEUCIQCAbxAyhIcAGhxgUPXXqPji30yxrip40ohkYczrnSX34gIgOqP2CB8HBbcOad3beLqHSWkIQuYFnlFeItPKZy9/8kQ=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "unpackedSize": 145798
+      },
+      "optionalDependencies": {
+        "@anthropic-ai/claude-code-linux-x64": "2.1.160",
+        "@anthropic-ai/claude-code-win32-x64": "2.1.160",
+        "@anthropic-ai/claude-code-darwin-x64": "2.1.160",
+        "@anthropic-ai/claude-code-linux-arm64": "2.1.160",
+        "@anthropic-ai/claude-code-win32-arm64": "2.1.160",
+        "@anthropic-ai/claude-code-darwin-arm64": "2.1.160",
+        "@anthropic-ai/claude-code-linux-x64-musl": "2.1.160",
+        "@anthropic-ai/claude-code-linux-arm64-musl": "2.1.160"
+      }
+    }
+  },
+  {
+    "package": "@openai/codex",
+    "version": "0.147.0",
+    "source": "https://registry.npmjs.org/@openai/codex/0.147.0",
+    "metadata": {
+      "name": "@openai/codex",
+      "version": "0.147.0",
+      "engines": {
+        "node": ">=16"
+      },
+      "bin": {
+        "codex": "bin/codex.js"
+      },
+      "repository": {
+        "url": "git+https://github.com/openai/codex.git",
+        "type": "git",
+        "directory": "codex-cli"
+      },
+      "dist": {
+        "shasum": "1792030d147156695a2b86db0ec1a000ab9a83fc",
+        "tarball": "https://registry.npmjs.org/@openai/codex/-/codex-0.147.0.tgz",
+        "fileCount": 3,
+        "integrity": "sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w==",
+        "signatures": [
+          {
+            "sig": "MEYCIQCX0Q1t6NOIdLaE8IwpddUIj3TGSysVUrONZq+mNvogEQIhAOCoZMQK7aE0n42nYbqSYn2PKCwxP+d6oUlsosdfgnXK",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          },
+          {
+            "sig": "MEUCIQD906eFU8wio1g380qqPKCyp0L1Y54vn4PjY6/Ov6jbmwIgeg5PuTF99qsNL3ozeb7ruJ7/lb1Hunt4PnbpCgWfTNw=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "attestations": {
+          "url": "https://registry.npmjs.org/-/npm/v1/attestations/@openai%2fcodex@0.147.0",
+          "provenance": {
+            "predicateType": "https://slsa.dev/provenance/v1"
+          }
+        },
+        "unpackedSize": 11652
+      },
+      "optionalDependencies": {
+        "@openai/codex-linux-x64": "npm:@openai/codex@0.147.0-linux-x64",
+        "@openai/codex-win32-x64": "npm:@openai/codex@0.147.0-win32-x64",
+        "@openai/codex-darwin-x64": "npm:@openai/codex@0.147.0-darwin-x64",
+        "@openai/codex-linux-arm64": "npm:@openai/codex@0.147.0-linux-arm64",
+        "@openai/codex-win32-arm64": "npm:@openai/codex@0.147.0-win32-arm64",
+        "@openai/codex-darwin-arm64": "npm:@openai/codex@0.147.0-darwin-arm64"
+      }
+    }
+  },
+  {
+    "package": "@opencode/cli",
+    "version": "2.0.32",
+    "source": "https://registry.npmjs.org/@opencode/cli/2.0.32",
+    "metadata": {
+      "name": "@opencode/cli",
+      "version": "2.0.32",
+      "bin": {
+        "opencode": "bin/opencode.exe",
+        "opencode2": "bin/opencode.exe"
+      },
+      "repository": {
+        "url": "git+https://github.com/anomalyco/opencode.git",
+        "type": "git"
+      },
+      "dist": {
+        "shasum": "1a176a8f6e021c9db8506372504a720288dacdeb",
+        "tarball": "https://registry.npmjs.org/@opencode/cli/-/cli-2.0.32.tgz",
+        "fileCount": 4,
+        "integrity": "sha512-nhRlQGFLMoqx50VtIvUmCV/43W6dR8Y+OXzXq17zstSjzLIUdwfBZG6zP3Mpzo0cmLQ2hvXW4/PbhvlLyhwGGg==",
+        "signatures": [
+          {
+            "sig": "MEYCIQDXDZOlCQwUSI0QrSgUjSvaY6JvChN/GvgAEbTXZ82FEAIhAIDs6BFtce4Ex5boExOJcd/th+rb6uQntB5pVJ+1yyTf",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          },
+          {
+            "sig": "MEUCIGBlDfP+o/VyCnk+iXjeLvvR6sGhqsGOQa5uZZPiUIstAiEAu4wAUZMRjPGOC12RamXNKpNFrCh3/4EFCJ3iHXqsXWU=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "unpackedSize": 8417
+      },
+      "optionalDependencies": {
+        "@opencode/cli-linux-x64": "2.0.32",
+        "@opencode/cli-darwin-x64": "2.0.32",
+        "@opencode/cli-linux-arm64": "2.0.32",
+        "@opencode/cli-windows-x64": "2.0.32",
+        "@opencode/cli-darwin-arm64": "2.0.32",
+        "@opencode/cli-windows-arm64": "2.0.32",
+        "@opencode/cli-linux-x64-musl": "2.0.32",
+        "@opencode/cli-linux-arm64-musl": "2.0.32",
+        "@opencode/cli-linux-x64-baseline": "2.0.32",
+        "@opencode/cli-darwin-x64-baseline": "2.0.32",
+        "@opencode/cli-windows-x64-baseline": "2.0.32",
+        "@opencode/cli-linux-x64-baseline-musl": "2.0.32"
+      },
+      "os": [
+        "darwin",
+        "linux",
+        "win32"
+      ],
+      "cpu": [
+        "arm64",
+        "x64"
+      ]
+    }
+  },
+  {
+    "package": "openclaw",
+    "version": "2026.6.11",
+    "source": "https://registry.npmjs.org/openclaw/2026.6.11",
+    "metadata": {
+      "name": "openclaw",
+      "version": "2026.6.11",
+      "engines": {
+        "node": ">=22.19.0"
+      },
+      "bin": {
+        "openclaw": "openclaw.mjs"
+      },
+      "repository": {
+        "url": "git+https://github.com/openclaw/openclaw.git",
+        "type": "git"
+      },
+      "dist": {
+        "shasum": "ac29d16f0c684d46cef0009885f4e0b5877685af",
+        "tarball": "https://registry.npmjs.org/openclaw/-/openclaw-2026.6.11.tgz",
+        "fileCount": 8944,
+        "integrity": "sha512-T+P/g19IheeT1ckXMoPN61dYuE8vBF4MderI+kWkvpuFYxPkJxn8AXLpu9IXCnN9g36Acpm9+mMD/V+lsvOkyA==",
+        "signatures": [
+          {
+            "sig": "MEUCIQDhpZSfzrKM+WHWi7CwloYImWZE+2ngQ0R1+Btao4daRAIgYlQtQqYBKrmNfVEG9tKUd+QvPcCV+jfYm9d2m3DQhQ8=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "attestations": {
+          "url": "https://registry.npmjs.org/-/npm/v1/attestations/openclaw@2026.6.11",
+          "provenance": {
+            "predicateType": "https://slsa.dev/provenance/v1"
+          }
+        },
+        "unpackedSize": 86337310
+      },
+      "optionalDependencies": {
+        "sqlite-vec": "0.1.9"
+      },
+      "dependencies": {
+        "ws": "8.21.0",
+        "tar": "7.5.16",
+        "zod": "4.4.3",
+        "diff": "9.0.0",
+        "glob": "13.0.6",
+        "jiti": "2.7.0",
+        "yaml": "2.9.0",
+        "chalk": "5.6.2",
+        "json5": "2.2.3",
+        "jszip": "3.10.1",
+        "tslog": "4.10.2",
+        "croner": "10.0.1",
+        "dotenv": "17.4.2",
+        "grammy": "1.43.0",
+        "ignore": "7.0.5",
+        "kysely": "0.29.2",
+        "openai": "6.39.1",
+        "qrcode": "1.5.4",
+        "undici": "8.5.0",
+        "clawpdf": "0.3.0",
+        "express": "5.2.1",
+        "typebox": "1.1.39",
+        "chokidar": "5.0.0",
+        "linkedom": "0.18.12",
+        "web-push": "3.6.7",
+        "commander": "14.0.3",
+        "file-type": "22.0.1",
+        "minimatch": "10.2.5",
+        "rastermill": "0.3.1",
+        "typescript": "6.0.3",
+        "@clack/core": "1.3.1",
+        "highlight.js": "11.11.1",
+        "partial-json": "0.1.7",
+        "quickjs-wasi": "3.0.0",
+        "@google/genai": "2.7.0",
+        "node-edge-tts": "1.2.10",
+        "@clack/prompts": "1.4.0",
+        "hosted-git-info": "10.1.1",
+        "playwright-core": "1.60.0",
+        "proper-lockfile": "4.1.2",
+        "web-tree-sitter": "0.26.9",
+        "@grammyjs/runner": "2.0.3",
+        "@homebridge/ciao": "1.3.9",
+        "@lydell/node-pty": "1.2.0-beta.12",
+        "tree-sitter-bash": "0.25.1",
+        "@anthropic-ai/sdk": "0.100.1",
+        "@openclaw/fs-safe": "0.3.0",
+        "@openclaw/proxyline": "0.3.3",
+        "@mistralai/mistralai": "2.2.5",
+        "@mozilla/readability": "0.6.0",
+        "@earendil-works/pi-tui": "0.78.0",
+        "@agentclientprotocol/sdk": "0.22.1",
+        "@modelcontextprotocol/sdk": "1.29.0",
+        "@grammyjs/transformer-throttler": "1.2.1"
+      },
+      "hasShrinkwrap": true
+    }
+  },
+  {
+    "package": "@deepseek-ai/dsh",
+    "version": "0.2.1-rc.2",
+    "source": "https://registry.npmjs.org/@deepseek-ai/dsh/0.2.1-rc.2",
+    "metadata": {
+      "name": "@deepseek-ai/dsh",
+      "version": "0.2.1-rc.2",
+      "bin": {
+        "dsh": "lib/bin.js"
+      },
+      "repository": {
+        "url": "git+https://github.com/deepseek-ai/deepseek-harness.git",
+        "type": "git",
+        "directory": "apps/cli"
+      },
+      "dist": {
+        "shasum": "a502d1551aabc881020e3cb7961c38901565731a",
+        "tarball": "https://registry.npmjs.org/@deepseek-ai/dsh/-/dsh-0.2.1-rc.2.tgz",
+        "fileCount": 20,
+        "integrity": "sha512-tvY+yhfKRifthbqPe/OK0AYxM5ZkvqfYq/jMYgJcEUxiRRL1Vwra3Ti5TB6AXgSWQdiPHYh/Vp6SJa9yHwMNuw==",
+        "signatures": [
+          {
+            "sig": "MEUCIQDzlV5D1iMmmEB24vl+G3SB66E2XZiUSgtm2Z4bUjcVBQIgChv383N7gUAjxF6MIuitkjQ8lzyD8Vr8s5zHmg59hoI=",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          },
+          {
+            "sig": "MEQCIGmYN4vmEyNNXPzkUQ5pZwVIGQj5+fXXBC5wJiZ6HfoOAiBmZQM4XSvt4lQowjVHiG9bC1dM3qPHaGI4jwhtWIwshw==",
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U"
+          }
+        ],
+        "unpackedSize": 75972
+      },
+      "dependencies": {
+        "js-yaml": "^4.3.2",
+        "commander": "^15.0.0",
+        "@deepseek-ai/cordis": "~4.0.5",
+        "@deepseek-ai/dsh-hmr": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-base": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-goal": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-skill": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-acp-app": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-cmdline": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-persona": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-sdk-app": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-fs": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-web-app": "0.2.1-rc.2",
+        "@deepseek-ai/schemastery": "~3.18.5",
+        "@deepseek-ai/dsh-app-boot": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-fs-local": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-headless": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-schedule": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-terminal": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-web": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-plan-mode": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-bash": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-goal": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-jobs": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-pwsh": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-todo": "0.2.1-rc.2",
+        "node-addon-require-builtin": "^0.1.9",
+        "@deepseek-ai/dsh-home-paths": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-http-proxy": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-jobs-local": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-mcp-client": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-pwsh-local": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-skill": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-sdk-minimal": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-token-meter": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-cordis": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-agent-preset": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-atomic-write": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-command-goal": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-pwsh-sandbox": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-skill-office": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-time-context": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tmux-context": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-present": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-workflow-ptc": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-mcp-resources": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-terminal-bash": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-ask-user": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-schedule": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-subagent": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-workflow": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-plugin-manager": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-fs-search": "0.2.1-rc.2",
+        "@deepseek-ai/cordis-plugin-timer": "~1.1.7",
+        "@deepseek-ai/dsh-command-compact": "0.2.1-rc.2",
+        "@deepseek-ai/cordis-plugin-loader": "~1.0.6",
+        "@deepseek-ai/dsh-client-ui-cordis": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-compaction-basic": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-skill-filesystem": "0.2.1-rc.2",
+        "@deepseek-ai/cordis-plugin-include": "~1.0.10",
+        "@deepseek-ai/dsh-goal-round-driver": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-session-reference": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-agent-instructions": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-launch-environment": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-session-projection": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-cordis-client-runner": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-bash-persistent": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-pwsh-persistent": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-subagent-control": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-client-ui-agent-preset": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-agent-tool-presentation": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-str-replace-editor": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-auto-review": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-ralph-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-tool-worktree": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-session-search": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-tool-workspace-dependencies": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-terminal-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-compaction-tool-result-pruner": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-inspector-profile": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-agent-team-profile": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-badge-skill-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-voice-input-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-plugin-market-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-session-titles-bundle": "0.2.1-rc.2",
+        "@deepseek-ai/dsh-experimental-cot-translation-bundle": "0.2.1-rc.2"
+      },
+      "hasShrinkwrap": false
+    }
+  }
+]

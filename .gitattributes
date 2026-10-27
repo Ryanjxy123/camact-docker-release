@@ -1,0 +1,2 @@
+# Preserve the exact source snapshot bytes, including inherited CRLF files.
+* -text

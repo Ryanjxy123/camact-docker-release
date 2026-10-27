@@ -1,0 +1,14 @@
+{
+  "platform": "linux/amd64",
+  "distribution": "Debian bookworm",
+  "additional_pinned_packages": {
+    "ripgrep": {
+      "version": "13.0.0-4+b2",
+      "executable_version": "13.0.0",
+      "path": "/usr/bin/rg",
+      "package_url": "https://deb.debian.org/debian/pool/main/r/rust-ripgrep/ripgrep_13.0.0-4+b2_amd64.deb",
+      "package_sha256": "feba1aea6022d84c67293686fe82132f7283d3c485a2cbd5af5c0e210615ecc2",
+      "reason": "OpenCode native grep requires rg on PATH inside its network-disabled sandbox."
+    }
+  }
+}
