@@ -135,6 +135,7 @@ docker compose run --rm --entrypoint python runner -B scripts/check-runtimes.py 
 docker compose run --rm --entrypoint python runner -B scripts/check-codecs.py
 docker run --rm --network=none --entrypoint python camact:local -B scripts/run-offline-tests.py
 python3 scripts/scan-release.py --tracked
+python3 scripts/scan-image.py --archive /path/to/docker-save.tar
 ```
 
 `scripts/native-loop-smoke.py` 使用合成 Task、本地模型协议服务器和真实官方 CLI 验证原生工具/续轮；不连接外部模型，但需要完整运行时及可用 gVisor。测试模式和参数先查看其 `--help`，结果写入独立验证目录，不混入 Benchmark。
@@ -157,5 +158,7 @@ python3 scripts/scan-release.py --tracked
 本目录是独立 Git 仓库，未设置远端、未推送。完成 [VALIDATION.md](docs/VALIDATION.md) 中所有 Docker 门禁后，再创建/选择 GitHub 仓库并上传。运行 `git ls-files` 和 `python3 scripts/scan-release.py --tracked` 检查本次将发布的文件。
 
 Actions 仅在手动 `workflow_dispatch` 输入明确 SemVer（如 `0.1.0`）或正式 GitHub Release 发布时执行；构建当前代码、运行离线检查和 Compose/gVisor 合成集成门禁，成功后再发布 `ghcr.io/<owner>/<repo>:<version>` 与 `sha-<commit>`。Action 本身固定源码 Commit。不依赖 latest、不下载正式 Benchmark、不配置模型 Key、不调用真实模型。授予包写入权限的内置 `GITHUB_TOKEN` 仅用于 GHCR 登录。多阶段构建只把完整源码、运行库和锁定 CLI 放入最终镜像，编译工具留在构建阶段。
+
+`scripts/scan-image.py` 在 Docker 门禁和发布前扫描 `docker save` 归档中的 OCI config、Env、History、Labels 以及每一层原始文件；即使文件随后被 whiteout 删除，也会被检查。工具只输出路径和问题类型，不输出候选密钥；归档结构异常时失败关闭。`bash scripts/verify-docker.sh` 会在构建后自动调用它，并验证镜像 ID、OCI 版本/源码标签、持久化 Benchmark 挂载和两个新容器的离线缓存复用。设置 `CAMACT_VERIFY_FULL_BENCHMARK=1` 可在已下载完整缓存的主机上额外执行固定 Commit 的容器内离线哈希检查。合成缓存检查只证明挂载/复用机制，不代替完整 Benchmark 验证。
 
 本轮只准备并本地执行 Workflow YAML/actionlint 静态检查，未触发远端发布。只有独立主机上真实 Docker 构建、启动、挂载持久化、容器内 gVisor/完整执行与评分统计、安全层扫描通过后，才可将验收状态改为 `READY_TO_PUBLISH`。

@@ -35,11 +35,6 @@ jobs:
               out.write('image=ghcr.io/' + os.environ['REPOSITORY'].lower() + '\n')
           PY
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build locally before publishing
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -62,19 +57,21 @@ jobs:
         env:
           CAMACT_IMAGE: camact:verify
           CAMACT_VERIFY_SKIP_BUILD: '1'
+          CAMACT_EXPECT_VERSION: ${{ steps.identity.outputs.version }}
+          CAMACT_EXPECT_SOURCE_REVISION: ${{ github.sha }}
         run: bash scripts/verify-docker.sh
-      - name: Publish explicit version and source tags
-        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          context: .
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ steps.identity.outputs.image }}:${{ steps.identity.outputs.version }}
-            ${{ steps.identity.outputs.image }}:sha-${{ github.sha }}
-          build-args: |
-            VERSION=${{ steps.identity.outputs.version }}
-            SOURCE_REVISION=${{ github.sha }}
-          cache-from: type=gha
-          provenance: mode=max
-          sbom: true
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish the scanned local candidate
+        env:
+          IMAGE: ${{ steps.identity.outputs.image }}
+          VERSION: ${{ steps.identity.outputs.version }}
+          SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          docker tag camact:verify "$IMAGE:$VERSION"
+          docker tag camact:verify "$IMAGE:sha-$SOURCE_REVISION"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:sha-$SOURCE_REVISION"

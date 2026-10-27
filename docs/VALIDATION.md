@@ -21,7 +21,7 @@
 | F 发布源码安全 | PASS（本地检查） | 发布源代码模式扫描、独立 Git 与 Docker 上下文白名单；不包含 Benchmark 数据、旧产物、安装目录或个人配置。最终追踪文件扫描单独留证 |
 | F 凭据隔离 | PASS（宿主 gVisor 探测） | 十种合成三角色/覆盖/HF 凭据未进入 Guest、Launch Plan 或生命周期记录；原生 CLI 使用占位 Key |
 | F 最终镜像层 | NOT_TESTED | 没有可扫描的完整镜像，不能声称镜像层安全扫描通过 |
-| GitHub Workflow | PASS（本地静态检查） | actionlint 1.7.12 通过；推送前强制 Compose/gVisor 合成集成门禁。未执行远端 Workflow |
+| GitHub Workflow | PASS（本地静态检查） | actionlint 1.7.12 通过；发布前先扫描已构建本地候选镜像，再强制 Compose/gVisor 合成集成门禁，最后只推送已扫描候选。未执行远端 Workflow |
 
 ## 测试证据
 
@@ -29,7 +29,7 @@
 
 | 证据 | 路径 |
 |---|---|
-| 干净 Python 126 项测试，零失败/错误/跳过 | `.validation/source-integration/clean-env-tests.json`、同名 `.log`；公开入口 `scripts/run-offline-tests.py` |
+| 干净 Python 131 项测试，零失败/错误/跳过 | `.validation/source-integration/final-offline-image-security/offline-tests.json`；公开入口 `scripts/run-offline-tests.py`，含 5 项 Docker 归档安全扫描测试 |
 | 依赖闭包与动态导入 | `.validation/source-integration/import-closure.json` |
 | 原代码逐文件比较 | `.validation/source-integration/source-compare.json` |
 | Compose 真实解析，不启动容器 | `.validation/source-integration/compose-config-paths.json` |
@@ -44,11 +44,12 @@
 | HF 指定版本完整下载 | 同目录 `benchmark/real-download.json` |
 | HF 全量缓存离线复用与只读范围选择 | 同目录 `benchmark/offline-reuse-and-layout.json` |
 | 最终 Git 追踪源码安全扫描 | 同目录 `security-scan-tracked.json` |
+| Docker 归档扫描器离线测试 | `tests/test_image_security.py`；当前仅合成归档，真实镜像扫描待 Docker 构建门禁 |
 | 正式目录保护 | `.validation/source-integration/formal-protection.json` |
 
 五套最终矩阵共 91 次本地 Agent 协议请求、15 次 Simulator 请求、1,590 个确定性 fixture Token。每例验证原生 shell/图片能力、合法资源视图、非法业务动作拒绝、公共 Prompt、visual_verified、Atomic/Strict、精确请求与 Token、完整 Usage、生命周期退出和状态清理；这些都是合成协议证据。此前失败尝试保留在忽略目录，最终矩阵记录其原因，包括 OpenClaw 并发启动超时及随后顺序重跑通过。
 
-最终构建上下文使用与 Docker 28.5.1 依赖一致的官方 Moby patternmatcher v0.6.0 解析，包含 190 个文件、2,714,597 字节；35 个根目录/嵌套凭据、数据和缓存探针全部排除。严格按 COPY004 清单复制到隔离目录后，在干净 venv、无 `.tools`/原配置/原项目路径的环境运行公开入口，126 项测试全部通过，测试前后所有 COPY 文件 SHA-256 不变。最终 COPY005 仅在宿主安装脚本的 apt 列表追加 `python3`，该差异逐字节核对且通过 bash 语法检查；其余 COPY 文件摘要相同。汇总为同验证目录的 `runtime-context-final-report.json`；该测试验证 COPY 源码闭包，仍不属于 Docker 容器测试。
+最终构建上下文使用与 Docker 28.5.1 依赖一致的官方 Moby patternmatcher v0.6.0 解析，包含 192 个文件、2,740,080 字节；35 个根目录/嵌套凭据、数据和缓存探针全部排除。严格按 COPY008 清单复制到隔离目录后，在无 `.tools`/原配置/原项目路径的环境运行公开入口，131 项测试全部通过，测试前后所有 COPY 文件 SHA-256 不变。COPY008 包含镜像归档扫描器及更强的 Docker 门禁脚本；新增文件的 5 项扫描器回归覆盖干净二进制、配置/History/Label 凭据、已删除层中的凭据、个人配置路径和损坏归档失败关闭。汇总为同验证目录的 `runtime-context-final-report.json`；该测试验证 COPY 源码闭包，仍不属于 Docker 容器测试。
 
 真实 HF 验证使用 Python 3.13.11、huggingface_hub 1.13.0，固定 Commit `53e2f450042485dfc4a3b566de6f46988c3a5661`；完整清单 SHA-256 为 `8dfc42da68938abcfac3b379659fbaa3b8d9c96eae39ef85662a2a92037f4e60`。下载结束后，以失败 stub 覆盖 HF 元数据、下载、客户端、网络连接和 Token 读取入口，再执行离线 ensure 和只读 lease，两次完整本地哈希均通过，外部调用全部为零。只读范围选择确认 20 Users、540 Tasks、六套 Harness 共 3,240 个待执行 Slot；没有 prepare/run、模型调用或正式测评启动。该缓存仅保留在本地忽略目录，未加入 Git 或 Docker 上下文。
 
