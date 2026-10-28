@@ -115,11 +115,38 @@ def native_evidence(harness, mode, output):
             "run/runs/execution/sandbox-launches/fixture/lifecycle.json": state,
             "run/runs/execution/native_turns/turn_001/turn.json": {"returncode": 0, "timed_out": False,
                 "decision": {"action": "finish", "reason": "completed"}}}
+    plan_name = "run/runs/execution/sandbox-launches/fixture/plan.json"
+    plan = values[plan_name]
+    package = "/opt/camact/.tools/" + harness
+    original = package + "/node_modules/.bin/" + controller.NATIVE_EXECUTABLES[harness]
+    resolved = package + "/node_modules/fixture/bin.js"
+    plan["runtime_mapping"] = [{"host": package, "guest": "/opt/camact/runtime/0"},
+                               {"host": "/opt/camact/.tools/node", "guest": "/opt/camact/runtime/1"}]
+    plan["argv"] = ["/usr/bin/python3", "/tmp/.camact/multi_launcher.py", "/opt/camact/runtime/0/node_modules/fixture/bin.js", "--fixture", mode]
+    wrapper = ["/usr/local/bin/python", "-B", "/opt/camact/harness/camact_multi_harness_v1/camact_multi/gvisor.py"]
+    turn_name = "run/runs/execution/native_turns/turn_001/turn.json"
+    values[turn_name]["argv"] = [original, "--fixture", mode]
+    values["native-artifact-index.json"] = {"native_executable_resolutions": [
+        {"artifact": turn_name, "original": original, "resolved": resolved}]}
     if harness == "claude":
-        values.pop("run/runs/execution/native_turns/turn_001/turn.json")
+        values.pop(turn_name)
+        values["native-artifact-index.json"]["native_executable_resolutions"] = []
         values["run/runs/execution/session_attempts/fixture_user/task_fixture/attempt_01/native_conversation.json"] = {
-            "invocations": [{"returncode": 0, "timed_out": False, "controlled_stop": False}],
+            "invocations": [{"returncode": 0, "timed_out": False, "controlled_stop": False,
+                             "command": wrapper + [output + "/" + plan_name]}],
             "simulator_continuations": []}
+    else:
+        preview_name = "run/runs/execution/sandbox-launches/preview/plan.json"
+        preview = json.loads(json.dumps(plan))
+        preview["metadata"] = output + "/" + preview_name.rsplit("/", 1)[0]
+        values[preview_name] = preview
+        values["run/runs/execution/launch.json"] = {"argv": wrapper + [output + "/" + preview_name], "executable": original}
+        if harness == "openclaw":
+            preflight = json.loads(json.dumps(plan))
+            preflight["metadata"] = output + "/run/runs/execution/sandbox-launches/preflight"
+            preflight["argv"] = ["/usr/local/bin/python3.13", "-c", controller.openclaw_preflight_code()]
+            values["run/runs/execution/sandbox-launches/preflight/plan.json"] = preflight
+            values["run/runs/execution/sandbox-launches/preflight/lifecycle.json"] = {**state, "state": parent + "/run-preflight"}
     return values
 
 
@@ -254,8 +281,10 @@ class DockerFixture:
                 relative = path.removeprefix(actual["case_output"] + "/")
                 if relative == "native-artifact-index.json":
                     index = {"schema": controller.NATIVE_INDEX_SCHEMA, "outer_policy": True, "script_returncode": 0,
-                             "errors": [], "files": [{"path": name, "bytes": len(evidence_bytes(name, value)),
-                                 "sha256": hashlib.sha256(evidence_bytes(name, value)).hexdigest()} for name, value in values.items()]}
+                             "errors": [], **values.get("native-artifact-index.json", {}),
+                             "files": [{"path": name, "bytes": len(evidence_bytes(name, value)),
+                                 "sha256": hashlib.sha256(evidence_bytes(name, value)).hexdigest()}
+                                 for name, value in values.items() if name != "native-artifact-index.json"]}
                     destination.write_text(json.dumps(index), encoding="utf-8")
                 elif relative in values:
                     destination.write_bytes(evidence_bytes(relative, values[relative]))
@@ -344,6 +373,10 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "PASS")
         self.assertEqual({(item["harness"], item["mode"]) for item in report["native_matrix"]}, set(controller.NATIVE_CASES))
         self.assertTrue(all(item["outcome"] == "PASS" for item in report["native_matrix"]))
+        for item in report["native_matrix"]:
+            classification = item["plan_classification"]
+            self.assertEqual(len(classification["planned_unexecuted"]), 0 if item["harness"] == "claude" else 1)
+            self.assertEqual(len(classification["executed"]), 2 if item["harness"] == "openclaw" else 1)
         creates = [argv for argv in fixture.calls if argv[:2] == ["docker", "create"] and controller.NATIVE_WRAPPER in argv]
         self.assertEqual(len(creates), 15)
         self.assertEqual(len({argv[argv.index("--name") + 1] for argv in creates}), 15)
@@ -444,6 +477,90 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(controller.validate_native(values, "opencode", "multi_turn", output), [])
         self.assertEqual(values["run/runs/execution/sandbox-launches/fixture/lifecycle.json"]["returncode"], -15)
 
+    def test_native_only_the_exact_coordinator_launch_preview_may_lack_a_lifecycle(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
+        plan_name = "run/runs/execution/sandbox-launches/preview/plan.json"
+        mutations = (
+            lambda values: values.pop("run/runs/execution/launch.json"),
+            lambda values: values["run/runs/execution/launch.json"]["argv"].append(output + "/another/plan.json"),
+            lambda values: values["run/runs/execution/launch.json"]["argv"].__setitem__(-1, output + "/../other/plan.json"),
+            lambda values: values["run/runs/execution/launch.json"]["argv"].__setitem__(-1, output + "-other/plan.json"),
+            lambda values: values["run/runs/execution/launch.json"]["argv"].__setitem__(-1, output + "/uncollected/plan.json"),
+            lambda values: values.update({"run/runs/execution/sandbox-launches/unknown/plan.json": json.loads(json.dumps(values[plan_name]))}),
+            lambda values: values[plan_name]["environment"].update(HF_TOKEN="synthetic-only"),
+        )
+        for number, mutate in enumerate(mutations):
+            with self.subTest(mutation=number):
+                values = native_evidence("codex", "single_turn", output)
+                mutate(values)
+                self.assertTrue(controller.validate_native(values, "codex", "single_turn", output))
+
+    def test_native_executed_plan_or_lifecycle_cannot_be_hidden_as_a_preview(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
+        base = "run/runs/execution/sandbox-launches/fixture/"
+        for remove_plan, fake_preview_lifecycle in ((False, False), (True, False), (False, True)):
+            with self.subTest(remove_plan=remove_plan, fake_preview_lifecycle=fake_preview_lifecycle):
+                values = native_evidence("codex", "single_turn", output)
+                lifecycle = values.pop(base + "lifecycle.json")
+                if remove_plan:
+                    values.pop(base + "plan.json")
+                if fake_preview_lifecycle:
+                    values["run/runs/execution/sandbox-launches/preview/lifecycle.json"] = lifecycle
+                self.assertTrue(controller.validate_native(values, "codex", "single_turn", output))
+
+    def test_native_repeated_identical_turn_argv_requires_distinct_executed_pairs(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-multi_turn"
+        values = native_evidence("codex", "multi_turn", output)
+        first = "run/runs/execution/native_turns/turn_001/turn.json"
+        second = "run/runs/execution/native_turns/turn_002/turn.json"
+        values[second] = json.loads(json.dumps(values[first]))
+        resolution = dict(values["native-artifact-index.json"]["native_executable_resolutions"][0], artifact=second)
+        values["native-artifact-index.json"]["native_executable_resolutions"].append(resolution)
+        base = "run/runs/execution/sandbox-launches/"
+        values[base + "repeated/plan.json"] = json.loads(json.dumps(values[base + "fixture/plan.json"]))
+        values[base + "repeated/plan.json"]["metadata"] = output + "/" + base + "repeated"
+        values[base + "repeated/lifecycle.json"] = dict(values[base + "fixture/lifecycle.json"])
+        self.assertEqual(controller.validate_native(values, "codex", "multi_turn", output), [])
+        values.pop(base + "repeated/plan.json")
+        values.pop(base + "repeated/lifecycle.json")
+        self.assertTrue(controller.validate_native(values, "codex", "multi_turn", output))
+
+    def test_native_executable_resolution_must_match_the_original_current_package(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
+        for field, value in (("original", "/opt/camact/.tools/opencode/node_modules/.bin/opencode"),
+                             ("resolved", "/etc/passwd"),
+                             ("resolved", "/opt/camact/.tools/node/bin/node"),
+                             ("resolved", "/opt/camact/.tools/codex/../node/bin/node")):
+            with self.subTest(field=field, value=value):
+                values = native_evidence("codex", "single_turn", output)
+                values["native-artifact-index.json"]["native_executable_resolutions"][0][field] = value
+                self.assertTrue(controller.validate_native(values, "codex", "single_turn", output))
+
+    def test_claude_orphans_have_no_preview_exception_and_invocations_need_exact_plan_references(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/claude-single_turn"
+        values = native_evidence("claude", "single_turn", output)
+        source = "run/runs/execution/sandbox-launches/fixture/plan.json"
+        values["run/runs/execution/sandbox-launches/unknown/plan.json"] = json.loads(json.dumps(values[source]))
+        values["run/runs/execution/launch.json"] = {"argv": ["/usr/local/bin/python", "-B",
+            "/opt/camact/harness/camact_multi_harness_v1/camact_multi/gvisor.py", output + "/" + source]}
+        self.assertTrue(controller.validate_native(values, "claude", "single_turn", output))
+        values = native_evidence("claude", "single_turn", output)
+        conversation = next(value for name, value in values.items() if name.endswith("/native_conversation.json"))
+        conversation["invocations"][0]["command"][-1] = output + "/unknown/plan.json"
+        self.assertTrue(controller.validate_native(values, "claude", "single_turn", output))
+
+    def test_openclaw_permission_preflight_must_be_the_original_paired_plan(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/openclaw-single_turn"
+        for remove_lifecycle in (False, True):
+            with self.subTest(remove_lifecycle=remove_lifecycle):
+                values = native_evidence("openclaw", "single_turn", output)
+                base = "run/runs/execution/sandbox-launches/preflight/"
+                if remove_lifecycle:
+                    values.pop(base + "lifecycle.json")
+                else:
+                    values[base + "plan.json"]["argv"][-1] = "print('unrelated')"
+                self.assertTrue(controller.validate_native(values, "openclaw", "single_turn", output))
+
     def test_native_formal_failure_flags_must_be_explicit_false(self):
         output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
         for field in ("agent_failure", "infrastructure_failure"):
@@ -516,12 +633,17 @@ class ControllerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "case"
             original_read = Path.read_text
+            original_resolve = Path.resolve
             def read(path, *args, **kwargs):
                 if str(path).replace("\\", "/") == "/proc/self/status":
                     return "CapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\n"
                 if str(path).replace("\\", "/") == "/proc/self/attr/current":
                     return controller.PROFILE + " (enforce)"
                 return original_read(path, *args, **kwargs)
+            def resolve(path, *args, **kwargs):
+                if path.as_posix() == "/opt/camact/.tools/codex/node_modules/.bin/codex":
+                    return Path("/opt/camact/.tools/codex/node_modules/fixture/bin.js")
+                return original_resolve(path, *args, **kwargs)
             def run(argv):
                 self.assertEqual(argv[1:4], ["-B", "/opt/camact/scripts/native-loop-smoke.py", "--harness"])
                 self.assertEqual(argv[-3:], ["single_turn", "--output", str(output)])
@@ -534,7 +656,8 @@ class ControllerTests(unittest.TestCase):
                 return mock.Mock(returncode=0)
             with mock.patch("os.getuid", return_value=10001, create=True), \
                     mock.patch("os.getgid", return_value=10001, create=True), \
-                    mock.patch.object(Path, "read_text", read), mock.patch("subprocess.run", side_effect=run), \
+                    mock.patch.object(Path, "read_text", read), mock.patch.object(Path, "resolve", resolve), \
+                    mock.patch("subprocess.run", side_effect=run), \
                     mock.patch("sys.argv", ["-c", "codex", "single_turn", str(output)]):
                 with self.assertRaises(SystemExit) as stopped:
                     exec(compile(controller.NATIVE_WRAPPER, "<native-wrapper>", "exec"), {})
@@ -545,6 +668,8 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(index["files"])
             self.assertTrue(all(controller.native_artifact_allowed(item["path"]) for item in index["files"]))
             self.assertNotIn("fixture-upstream.json", {item["path"] for item in index["files"]})
+            self.assertEqual(len(index["native_executable_resolutions"]), 1)
+            self.assertEqual(index["native_executable_resolutions"][0]["resolved"], "/opt/camact/.tools/codex/node_modules/fixture/bin.js")
 
     def test_scan_passes_before_every_helper_and_runner(self):
         fixture = DockerFixture()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import importlib.util
 import json
@@ -34,6 +35,7 @@ NATIVE_CASES = tuple((name, mode) for name in ("claude", "codex", "opencode", "d
 NATIVE_INDEX_SCHEMA = "camact.gvisor.native-artifacts.v1"
 NATIVE_CASE_BYTES = 32 * 1024 * 1024
 NATIVE_CASE_FILES = 256
+NATIVE_EXECUTABLES = {"claude": "claude", "codex": "codex", "opencode": "opencode", "deepseek": "dsh", "openclaw": "openclaw"}
 NATIVE_ASSERTIONS = {
     "native_tool_assertions": {"readonly_resources_and_no_secrets", "rejected_invalid_business_actions", "history_context"},
     "token_accounting_assertions": {"agent_request_count", "agent_capture_complete", "agent_usage_complete",
@@ -47,7 +49,7 @@ def native_artifact_allowed(name):
     parts = path.parts
     if not parts or path.is_absolute() or ".." in parts or path.as_posix() != name or "\\" in name:
         return False
-    if name in {"validation.json", "run/result.json", "run/token_usage/accounting_v3/summary.json",
+    if name in {"validation.json", "run/result.json", "run/runs/execution/launch.json", "run/token_usage/accounting_v3/summary.json",
                 "run/runs/standard_run_artifacts.jsonl"}:
         return True
     if parts[0] != "run":
@@ -68,7 +70,8 @@ outer=(os.getuid()==10001 and os.getgid()==10001
     and int(status['CapEff'].strip(),16)==0 and int(status['CapBnd'].strip(),16)==0
     and status['NoNewPrivs'].strip()=='1' and status['Seccomp'].strip()=='2'
     and pathlib.Path('/proc/self/attr/current').read_text().strip()=='camact-gvisor-diagnostic-v1 (enforce)')
-index={'schema':'camact.gvisor.native-artifacts.v1','outer_policy':outer,'files':[],'errors':[]}
+index={'schema':'camact.gvisor.native-artifacts.v1','outer_policy':outer,'files':[],'errors':[],
+       'native_executable_resolutions':[]}
 rc=125
 try:
     if not outer: raise RuntimeError('outer_policy')
@@ -79,7 +82,7 @@ finally:
     def allowed(path):
         p=path.parts
         name=path.as_posix()
-        return (name in {'validation.json','run/result.json','run/token_usage/accounting_v3/summary.json',
+        return (name in {'validation.json','run/result.json','run/runs/execution/launch.json','run/token_usage/accounting_v3/summary.json',
                         'run/runs/standard_run_artifacts.jsonl'}
             or (p[0]=='run' and ((len(p)>=4 and p[-3]=='sandbox-launches' and p[-1] in {'plan.json','lifecycle.json'})
                 or p[-1] in {'turn.json','native_conversation.json'}
@@ -95,6 +98,21 @@ finally:
             index['errors'].append('artifact_limit'); continue
         total+=size
         index['files'].append({'path':relative.as_posix(),'bytes':size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+        if path.name=='turn.json':
+            try:
+                original=json.loads(path.read_text())['argv'][0]
+                source=pathlib.PurePosixPath(original)
+                executable={'claude':'claude','codex':'codex','opencode':'opencode','deepseek':'dsh','openclaw':'openclaw'}[sys.argv[1]]
+                package='/opt/camact/.tools/'+sys.argv[1]
+                if not source.is_absolute() or '..' in source.parts or original!=package+'/node_modules/.bin/'+executable:
+                    raise ValueError('unapproved executable')
+                resolved=pathlib.Path(original).resolve(strict=True).as_posix()
+                if not resolved.startswith(package+'/') or '..' in pathlib.PurePosixPath(resolved).parts:
+                    raise ValueError('unapproved resolved executable')
+                index['native_executable_resolutions'].append({'artifact':relative.as_posix(),
+                    'original':original,'resolved':resolved})
+            except (OSError,ValueError,KeyError,IndexError,TypeError):
+                index['errors'].append('native_executable_resolution')
     index['script_returncode']=rc
     (root/'native-artifact-index.json').write_text(json.dumps(index)+'\n')
 sys.exit(rc)
@@ -271,6 +289,146 @@ def trusted_environment_name(name):
             or name in {"CAMACT_ZCLOUD_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN"})
 
 
+def launcher_plan_reference(argv, case_output):
+    if (not isinstance(argv, list) or len(argv) != 4 or not all(isinstance(value, str) for value in argv)
+            or not re.fullmatch(r"/usr/(?:local/)?bin/python(?:3(?:\.13)?)?", argv[0]) or argv[1] != "-B"
+            or argv[2] != "/opt/camact/harness/camact_multi_harness_v1/camact_multi/gvisor.py"):
+        return None
+    path = PurePosixPath(argv[3])
+    if (not path.is_absolute() or ".." in path.parts or path.as_posix() != argv[3]
+            or not argv[3].startswith(case_output + "/") or not argv[3].endswith("/plan.json")):
+        return None
+    return argv[3][len(case_output) + 1:-len("/plan.json")]
+
+
+def native_guest_argv(argv, resolution, mapping, harness):
+    if (not isinstance(argv, list) or not argv or not all(isinstance(value, str) for value in argv)
+            or not isinstance(resolution, dict) or resolution.get("original") != argv[0]
+            or not isinstance(mapping, list) or not mapping):
+        return None
+    resolved = resolution.get("resolved")
+    package = "/opt/camact/.tools/" + harness
+    if (argv[0] != package + "/node_modules/.bin/" + NATIVE_EXECUTABLES[harness]
+            or not isinstance(resolved, str) or not resolved.startswith(package + "/")
+            or ".." in PurePosixPath(resolved).parts or PurePosixPath(resolved).as_posix() != resolved):
+        return None
+    roots = []
+    for item in mapping:
+        if (not isinstance(item, dict) or not isinstance(item.get("host"), str) or not isinstance(item.get("guest"), str)
+                or not re.fullmatch(r"/opt/camact/\.tools/(?:claude|codex|opencode|deepseek|openclaw|node)", item["host"])
+                or not re.fullmatch(r"/opt/camact/runtime/[01]", item["guest"])):
+            return None
+        roots.append((item["host"], item["guest"]))
+    if (len(set(host for host, _ in roots)) != len(roots) or len(set(guest for _, guest in roots)) != len(roots)
+            or not any(resolved.startswith(host + "/") and argv[0].startswith(host + "/") for host, _ in roots)):
+        return None
+    def mapped(value):
+        for host, guest in sorted(roots, key=lambda item: len(item[0]), reverse=True):
+            if value == host or value.startswith(host + "/"):
+                return guest + value[len(host):]
+        return value
+    return ["/usr/bin/python3", "/tmp/.camact/multi_launcher.py", mapped(resolved), *[mapped(value) for value in argv[1:]]]
+
+
+def openclaw_preflight_code():
+    source = ROOT / "harness/camact_multi_harness_v1/camact_multi/openclaw_runtime.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "sandbox_preflight")
+    value = next(node.value for node in function.body if isinstance(node, ast.Assign)
+                 and any(isinstance(target, ast.Name) and target.id == "code" for target in node.targets))
+    code = ast.literal_eval(value)
+    if not isinstance(code, str):
+        raise ValueError("OpenClaw preflight code is not a literal")
+    return code
+
+
+def classify_native_plans(evidence, harness, case_output):
+    """Separate one source-proven coordinator preview from real invocations."""
+    plans = {name.rsplit("/", 1)[0]: value for name, value in evidence.items()
+             if name.endswith("/plan.json") and "/sandbox-launches/" in name}
+    lifecycles = {name.rsplit("/", 1)[0]: value for name, value in evidence.items()
+                  if name.endswith("/lifecycle.json") and "/sandbox-launches/" in name}
+    classification = {"executed": [], "planned_unexecuted": []}
+    errors = []
+    if not plans or set(lifecycles) - set(plans):
+        errors.append("plan_lifecycle_pairs")
+    paired = set(plans) & set(lifecycles)
+    orphan = set(plans) - set(lifecycles)
+    def executed(name, kind, invocation):
+        classification["executed"].append({"plan": name + "/plan.json", "lifecycle": name + "/lifecycle.json",
+                                           "kind": kind, "invocation": invocation})
+    if harness == "claude":
+        references = []
+        for source, document in evidence.items():
+            if source.endswith("/native_conversation.json") and isinstance(document, dict):
+                for number, invocation in enumerate(document.get("invocations", [])):
+                    reference = launcher_plan_reference(invocation.get("command") if isinstance(invocation, dict) else None, case_output)
+                    if reference not in paired:
+                        errors.append("claude_invocation_plan:" + source)
+                    else:
+                        references.append(reference)
+                        executed(reference, "claude_invocation", source + "#invocations[" + str(number) + "]")
+        if orphan or not references or len(references) != len(set(references)) or set(references) != paired:
+            errors.append("plan_lifecycle_pairs")
+        return classification, errors
+    launch_name = "run/runs/execution/launch.json"
+    launch = evidence.get(launch_name)
+    preview = launcher_plan_reference(launch.get("argv") if isinstance(launch, dict) else None, case_output)
+    if preview not in plans or orphan != {preview}:
+        errors.append("coordinator_preview_reference")
+        errors.append("plan_lifecycle_pairs")
+    else:
+        classification["planned_unexecuted"].append({"plan": preview + "/plan.json",
+            "kind": "coordinator_launch_preview", "reference": launch_name + "#argv", "lifecycle_present": False})
+    turns = {name: value for name, value in evidence.items() if name.endswith("/turn.json")}
+    index = evidence.get("native-artifact-index.json", {})
+    raw_resolutions = index.get("native_executable_resolutions") if isinstance(index, dict) else None
+    resolutions = {}
+    if isinstance(raw_resolutions, list):
+        for item in raw_resolutions:
+            if not isinstance(item, dict) or item.get("artifact") not in turns or item.get("artifact") in resolutions:
+                errors.append("native_executable_resolution")
+            else:
+                resolutions[item["artifact"]] = item
+    if not turns or set(resolutions) != set(turns):
+        errors.append("native_executable_resolution")
+    preview_plan = plans.get(preview)
+    mapping = preview_plan.get("runtime_mapping") if isinstance(preview_plan, dict) else None
+    for number, (source, turn) in enumerate(sorted(turns.items())):
+        argv = turn.get("argv") if isinstance(turn, dict) else None
+        expected = native_guest_argv(argv, resolutions.get(source), mapping, harness)
+        if (expected is None or not isinstance(launch, dict) or not argv or launch.get("executable") != argv[0]
+                or (number == 0 and preview_plan.get("argv") != expected)):
+            errors.append("native_turn_plan_argv:" + source)
+            continue
+        matches = sorted(name for name in paired if isinstance(plans[name], dict)
+                         and plans[name].get("runtime_mapping") == mapping and plans[name].get("argv") == expected)
+        if not matches:
+            errors.append("native_turn_plan_missing:" + source)
+            continue
+        selected = matches[0]  # Identical repeated argv still consumes one distinct execution per turn.
+        paired.remove(selected)
+        executed(selected, "native_turn", source)
+    if harness == "openclaw" and len(paired) == 1:
+        selected = next(iter(paired))
+        plan = plans[selected]
+        argv = plan.get("argv") if isinstance(plan, dict) else None
+        expected_code = diag.redact(openclaw_preflight_code(), limit=None)
+        if (isinstance(argv, list) and len(argv) == 3
+                and argv[0] in {"/usr/bin/python3", "/usr/local/bin/python3", "/usr/local/bin/python3.13"}
+                and argv[1] == "-c" and diag.redact(argv[2], limit=None) == expected_code
+                and not any(mount.get("destination") == "/transport" for mount in plan.get("mounts", []))):
+            paired.remove(selected)
+            executed(selected, "openclaw_permission_preflight", "camact_multi.openclaw_runtime.sandbox_preflight")
+        else:
+            errors.append("openclaw_preflight_plan")
+    elif harness == "openclaw":
+        errors.append("openclaw_preflight_plan")
+    if paired:
+        errors.append("executed_plan_without_invocation")
+    return classification, errors
+
+
 def validate_native(evidence, harness, mode, case_output):
     """Keep the existing smoke assertions and verify their retained evidence."""
     errors = []
@@ -338,8 +496,8 @@ def validate_native(evidence, harness, mode, case_output):
              if name.endswith("/plan.json") and "/sandbox-launches/" in name}
     lifecycles = {name.rsplit("/", 1)[0]: value for name, value in evidence.items()
                   if name.endswith("/lifecycle.json") and "/sandbox-launches/" in name}
-    if not plans or set(plans) != set(lifecycles):
-        errors.append("plan_lifecycle_pairs")
+    _, plan_errors = classify_native_plans(evidence, harness, case_output)
+    errors.extend(plan_errors)
     state_parent = str(PurePosixPath(case_output).parent / "gvisor-state")
     for name, plan in plans.items():
         if (not isinstance(plan, dict) or plan.get("schema") != "camact.gvisor.launch.v1"
@@ -687,7 +845,7 @@ class Controller:
                       and total <= NATIVE_CASE_BYTES)
         if not structural:
             return {}, ["artifact_inventory_invalid"]
-        evidence, errors = {}, []
+        evidence, errors = {"native-artifact-index.json": index}, []
         for number, item in enumerate(entries):
             name = item["path"]
             path = target.joinpath(*PurePosixPath(name).parts)
@@ -754,6 +912,7 @@ class Controller:
                 evidence, errors = self.native_artifacts(container, case_output, target, stage)
                 row["artifacts"] = sorted(evidence)
                 row["lifecycles"] = {name: value for name, value in evidence.items() if name.endswith("/lifecycle.json")}
+                row["plan_classification"], _ = classify_native_plans(evidence, harness, case_output)
                 errors += validate_native(evidence, harness, mode, case_output)
                 row["validation_errors"] = errors
                 self.check(stage + ".evidence", not errors, ", ".join(errors), stop=False)
