@@ -8,6 +8,10 @@ on:
         type: choice
         default: minimal
         options: [minimal, production-plan]
+      reuse_image_run:
+        description: Optional same-repository diagnostic Run ID with a scanned image artifact
+        type: string
+        default: ''
       policy:
         description: AppArmor experiment selection; candidate never changes production
         type: choice
@@ -16,6 +20,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   diagnose:
@@ -80,7 +85,9 @@ jobs:
           day=$(TZ=Asia/Shanghai date +%F)
           echo "DIAGNOSTIC_ARCHIVE=$GITHUB_WORKSPACE/harness/_log/$day/camact-gvisor-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-production-plan" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: inputs.reuse_image_run == ''
       - name: Build unchanged production Dockerfile for isolated diagnostics
+        if: inputs.reuse_image_run == ''
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
@@ -93,10 +100,130 @@ jobs:
             SOURCE_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Load a previously scanned image only when executable source is identical
+        if: inputs.reuse_image_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REUSE_RUN: ${{ inputs.reuse_image_run }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, importlib.util, json, os, pathlib, re, subprocess
+          run = os.environ['REUSE_RUN']
+          if not re.fullmatch(r'[0-9]+', run):
+              raise SystemExit('Reuse Run ID must be numeric')
+          repository = os.environ['REPOSITORY']
+          info = json.loads(subprocess.check_output(['gh', 'api', f'repos/{repository}/actions/runs/{run}']))
+          if (info.get('path') != '.github/workflows/diagnose-gvisor.yml'
+                  or info.get('event') != 'workflow_dispatch'
+                  or info.get('head_repository', {}).get('full_name') != repository):
+              raise SystemExit('Image artifact must originate from this diagnostic workflow/repository')
+          target = pathlib.Path(os.environ['DIAGNOSTIC_ARCHIVE']) / 'reused-image'
+          target.mkdir(parents=True, exist_ok=False)
+          subprocess.run(['gh', 'run', 'download', run, '--repo', repository, '--name',
+                          'gvisor-diagnostic-image', '--dir', str(target)], check=True)
+          manifest = json.loads((target / 'image-manifest.json').read_text())
+          revision = manifest.get('source_revision', '')
+          if (manifest.get('schema') != 'camact.gvisor.diagnostic-image.v1'
+                  or not re.fullmatch(r'[0-9a-f]{40}', revision)
+                  or revision != info.get('head_sha')
+                  or not re.fullmatch(r'sha256:[0-9a-f]{64}', manifest.get('image_id', ''))
+                  or manifest.get('version') != '0.1.0-rc.1'):
+              raise SystemExit('Image provenance identity mismatch')
+          subprocess.run(['git', 'fetch', '--no-tags', '--depth=1', 'origin', revision], check=True)
+          spec = importlib.util.spec_from_file_location('image_provenance', 'scripts/diagnostic/production-plan-controller.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          original = module.critical_source_digest(revision)
+          current = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if original != module.critical_source_digest(current) or original != manifest.get('critical_source_digest'):
+              raise SystemExit('Executable source changed; rebuild the image')
+          archive = target / 'image.tar.zst'
+          if archive.is_symlink() or not archive.is_file() or archive.stat().st_size > 4 * 1024**3:
+              raise SystemExit('Invalid bounded image artifact')
+          digest = hashlib.sha256()
+          with archive.open('rb') as source:
+              for block in iter(lambda: source.read(1024 * 1024), b''):
+                  digest.update(block)
+          if digest.hexdigest() != manifest.get('image_archive_sha256'):
+              raise SystemExit('Image artifact checksum mismatch')
+          with subprocess.Popen(['zstd', '-dc', str(archive)], stdout=subprocess.PIPE) as unpack:
+              loaded = subprocess.run(['docker', 'load'], stdin=unpack.stdout, capture_output=True)
+              unpack.stdout.close()
+              unpack_status = unpack.wait()
+          if loaded.returncode or unpack_status:
+              raise SystemExit('Image artifact load failed')
+          print('Loaded verified diagnostic image ' + manifest['image_id'])
+          PY
       - name: Load bounded experimental AppArmor policy on this disposable runner
         run: sudo apparmor_parser --replace scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
       - name: Verify real production builder, bind storage and CLI boundaries
-        run: python3 -B scripts/diagnostic/production-plan-controller.py --image camact:gvisor-diagnostic --output "$DIAGNOSTIC_ARCHIVE/production-plan"
+        env:
+          REUSE_RUN: ${{ inputs.reuse_image_run }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, subprocess, sys
+          archive = pathlib.Path(os.environ['DIAGNOSTIC_ARCHIVE'])
+          args = [sys.executable, '-B', 'scripts/diagnostic/production-plan-controller.py',
+                  '--output', str(archive / 'production-plan')]
+          if os.environ['REUSE_RUN']:
+              manifest = archive / 'reused-image/image-manifest.json'
+              image = json.loads(manifest.read_text())['image_id']
+              args += ['--image', image, '--reused-image-manifest', str(manifest)]
+          else:
+              args += ['--image', 'camact:gvisor-diagnostic']
+          raise SystemExit(subprocess.run(args).returncode)
+          PY
+      - name: Preserve the immutable scanned image for diagnostic-only policy iterations
+        id: image_export
+        if: always() && inputs.reuse_image_run == ''
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess
+          archive = pathlib.Path(os.environ['DIAGNOSTIC_ARCHIVE'])
+          source = archive / 'production-plan/image-manifest.json'
+          report = archive / 'production-plan/report.json'
+          if not source.is_file() or not report.is_file():
+              raise SystemExit(0)
+          result = json.loads(report.read_text()).get('image_scan', {})
+          if result.get('result') != 'PASS' or result.get('issue_count') != 0 or result.get('issues') != []:
+              raise SystemExit(0)
+          manifest = json.loads(source.read_text())
+          image = manifest.get('image_id', '')
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if (not re.fullmatch(r'sha256:[0-9a-f]{64}', image)
+                  or manifest.get('source_revision') != revision
+                  or manifest.get('version') != '0.1.0-rc.1'):
+              raise SystemExit('Scanned image export identity mismatch')
+          actual = subprocess.check_output(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], text=True).strip()
+          if actual != image:
+              raise SystemExit('Scanned image no longer matches immutable identity')
+          target = archive / 'reusable'
+          target.mkdir(parents=True, exist_ok=False)
+          destination = target / 'image.tar.zst'
+          with subprocess.Popen(['docker', 'save', image], stdout=subprocess.PIPE) as saved:
+              packed = subprocess.run(['zstd', '-T0', '-q', '-o', str(destination)], stdin=saved.stdout)
+              saved.stdout.close()
+              save_status = saved.wait()
+          if packed.returncode or save_status:
+              raise SystemExit('Scanned image archive creation failed')
+          digest = hashlib.sha256()
+          with destination.open('rb') as content:
+              for block in iter(lambda: content.read(1024 * 1024), b''):
+                  digest.update(block)
+          manifest['image_archive_sha256'] = digest.hexdigest()
+          (target / 'image-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('ready=true\n')
+          PY
+      - name: Retain scanned diagnostic image without publishing to a registry
+        if: always() && steps.image_export.outputs.ready == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gvisor-diagnostic-image
+          path: ${{ env.DIAGNOSTIC_ARCHIVE }}/reusable/
+          compression-level: 0
+          retention-days: 3
       - name: Retain sanitized production-plan evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -105,6 +232,7 @@ jobs:
           path: |
             ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/report.json
             ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/summary.md
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/image-manifest.json
             ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/probe-artifacts/
             ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/logs/
           if-no-files-found: warn

@@ -16,6 +16,27 @@ with mock.patch("ctypes.CDLL"):
     SPEC.loader.exec_module(controller)
 IMAGE = "sha256:" + "a" * 64
 REVISION = "b" * 40
+SOURCE_REVISION = "c" * 40
+BASE_TREE = {
+    "harness/camact_multi_harness_v1/camact_multi/gvisor.py": ("100644", "blob", "1" * 40),
+    "scripts/diagnostic/production-plan-probe.py": ("100644", "blob", "2" * 40),
+    "locks/runtimes.json": ("100644", "blob", "3" * 40),
+    "scripts/scan-image.py": ("100644", "blob", "4" * 40),
+    "compose.yaml": ("100644", "blob", "5" * 40),
+    **{path: ("100644", "blob", "6" * 40) for path in controller.REUSE_SAFE_FILES},
+}
+
+
+def tree_text(tree):
+    return "".join(" ".join(tree[path]) + "\t" + path + "\n" for path in sorted(tree))
+
+
+def reused_manifest(fixture):
+    with mock.patch.object(controller.diag, "command", side_effect=fixture):
+        digest = controller.critical_source_digest(SOURCE_REVISION)
+    return {"schema": controller.IMAGE_MANIFEST_SCHEMA, "image_id": IMAGE,
+            "source_revision": SOURCE_REVISION, "version": controller.VERSION,
+            "critical_source_digest": digest, "image_archive_sha256": "e" * 64}
 
 
 def result(code=0, stdout="", stderr=""):
@@ -55,7 +76,7 @@ def compose():
 
 class DockerFixture:
     def __init__(self, *, scan_pass=True, drift=None, helper_drift=None, report=None, omit=(),
-                 empty_created_mounts=False, timeout_role=None):
+                 empty_created_mounts=False, timeout_role=None, image_revision=REVISION):
         self.calls = []
         self.containers = {}
         self.scan_pass = scan_pass
@@ -67,11 +88,26 @@ class DockerFixture:
         self.report = inner_report() if report is None else report
         self.omit = set(omit)
         self.source = compose()
+        self.image_revision = image_revision
+        self.image_version = controller.VERSION
+        self.image_id = IMAGE
+        self.dirty_paths = set()
+        self.trees = {REVISION: dict(BASE_TREE), SOURCE_REVISION: dict(BASE_TREE)}
 
     def __call__(self, argv, timeout=20):
         argv = [str(value) for value in argv]
         self.calls.append(argv)
         if argv[0] == "git":
+            if "cat-file" in argv:
+                return result(stdout="commit") if argv[-1] in self.trees else result(1)
+            if "ls-tree" in argv:
+                return result(stdout=tree_text(self.trees[argv[-1]])) if argv[-1] in self.trees else result(1)
+            if "diff" in argv:
+                expected = ["git", "-C", str(controller.ROOT), "diff", "--quiet", REVISION, "--", ".",
+                            *(":(top,literal,exclude)" + path for path in sorted(controller.REUSE_SAFE_FILES))]
+                if argv != expected:
+                    raise AssertionError("Critical source cleanliness must include staged and unstaged changes with exact exclusions")
+                return result(1 if self.dirty_paths - controller.REUSE_SAFE_FILES else 0)
             return result(stdout=REVISION)
         if argv[0] == "sudo":
             return result(1, stderr="Audit unavailable in the unit fixture")
@@ -81,9 +117,11 @@ class DockerFixture:
                 "issue_count": 0 if self.scan_pass else 1, "issues": [] if self.scan_pass else [{}],
                 "candidate_values_printed": False}))
         if argv[:3] == ["docker", "image", "inspect"]:
-            return result(stdout=json.dumps({"id": IMAGE, "version": controller.VERSION,
-                "revision": REVISION, "os": "linux", "architecture": "amd64"}))
+            return result(stdout=json.dumps({"id": self.image_id, "version": self.image_version,
+                "revision": self.image_revision, "os": "linux", "architecture": "amd64"}))
         if argv[:2] == ["docker", "compose"]:
+            if "--profile" not in argv or argv[argv.index("--profile") + 1] != "tools":
+                return result(stdout=json.dumps({"services": {"runner": self.source["services"]["runner"]}}))
             return result(stdout=json.dumps(self.source))
         if argv[:2] == ["docker", "create"]:
             if not self.scan_seen or not self.scan_pass:
@@ -144,13 +182,67 @@ class DockerFixture:
         raise AssertionError("Unexpected command category: " + argv[0])
 
 
+class SourceDigestTests(unittest.TestCase):
+    def digest(self, fixture, revision=REVISION):
+        with mock.patch.object(controller.diag, "command", side_effect=fixture):
+            return controller.critical_source_digest(revision)
+
+    def test_only_the_four_reviewed_host_files_are_excluded(self):
+        self.assertEqual(controller.REUSE_SAFE_FILES, {
+            ".github/workflows/diagnose-gvisor.yml",
+            "scripts/diagnostic/camact-gvisor-diagnostic-v1.profile",
+            "scripts/diagnostic/production-plan-controller.py",
+            "tests/test_production_plan_controller.py",
+        })
+        fixture = DockerFixture()
+        before = self.digest(fixture)
+        for path in controller.REUSE_SAFE_FILES:
+            fixture.trees[REVISION][path] = ("100755", "blob", "d" * 40)
+        self.assertEqual(self.digest(fixture), before)
+
+    def test_core_probe_lock_and_every_other_critical_blob_change_the_digest(self):
+        for path in BASE_TREE.keys() - controller.REUSE_SAFE_FILES:
+            with self.subTest(path=path):
+                fixture = DockerFixture()
+                before = self.digest(fixture)
+                fixture.trees[REVISION][path] = ("100644", "blob", "d" * 40)
+                self.assertNotEqual(self.digest(fixture), before)
+
+    def test_mode_type_path_additions_and_deletions_are_critical(self):
+        path = "scripts/diagnostic/production-plan-probe.py"
+        changes = {
+            "mode": lambda tree: tree.update({path: ("100755", "blob", "2" * 40)}),
+            "type": lambda tree: tree.update({path: ("160000", "commit", "2" * 40)}),
+            "rename": lambda tree: tree.update({path + ".renamed": tree.pop(path)}),
+            "add": lambda tree: tree.update({"new-critical-file": ("100644", "blob", "2" * 40)}),
+            "delete": lambda tree: tree.pop(path),
+        }
+        for name, change in changes.items():
+            with self.subTest(change=name):
+                fixture = DockerFixture()
+                before = self.digest(fixture)
+                change(fixture.trees[REVISION])
+                self.assertNotEqual(self.digest(fixture), before)
+
+    def test_unavailable_commits_and_non_commit_references_are_rejected(self):
+        fixture = DockerFixture()
+        for revision in ("HEAD", "b" * 7, "B" * 40, "d" * 40):
+            with self.subTest(revision=revision), self.assertRaises(ValueError):
+                self.digest(fixture, revision)
+        self.assertFalse(any("fetch" in argv for argv in fixture.calls))
+
+
 class ControllerTests(unittest.TestCase):
-    def invoke(self, fixture):
+    def invoke(self, fixture, manifest=None):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         output = Path(temporary.name) / "production-plan"
+        manifest_path = None
+        if manifest is not None:
+            manifest_path = Path(temporary.name) / "reuse-manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         with mock.patch.object(controller.diag, "command", side_effect=fixture):
-            report = controller.Controller(output).run("camact:gvisor-diagnostic")
+            report = controller.Controller(output).run("camact:gvisor-diagnostic", reused_image_manifest=manifest_path)
         return report, output
 
     def test_scan_passes_before_every_helper_and_runner(self):
@@ -174,12 +266,167 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(len(mounts), 2)
         self.assertTrue(any("dst=/run/secrets/production-plan-fixture,readonly" in value for value in mounts))
         self.assertTrue((output / "report.json").is_file())
+        exported = json.loads((output / "image-manifest.json").read_text())
+        self.assertEqual(exported["source_revision"], REVISION)
+        self.assertEqual(exported["image_id"], IMAGE)
+        self.assertNotIn("image_archive_sha256", exported)
+        self.assertIs(report["image_provenance"]["reused"], False)
 
     def test_scan_failure_prevents_all_containers(self):
         fixture = DockerFixture(scan_pass=False)
-        report, _ = self.invoke(fixture)
+        report, output = self.invoke(fixture)
         self.assertEqual(report["outcome"], "FAIL")
         self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+        self.assertFalse((output / "image-manifest.json").exists())
+
+    def test_reuse_requires_the_original_identity_and_a_new_scan_before_containers(self):
+        fixture = DockerFixture(image_revision=SOURCE_REVISION)
+        report, output = self.invoke(fixture, reused_manifest(fixture))
+        self.assertEqual(report["outcome"], "PASS")
+        provenance = report["image_provenance"]
+        self.assertIs(provenance["reused"], True)
+        self.assertEqual(provenance["current_revision"], REVISION)
+        self.assertEqual(provenance["source_revision"], SOURCE_REVISION)
+        self.assertEqual(provenance["archive_checksum_scope"], "workflow_before_load")
+        scan_index = next(index for index, argv in enumerate(fixture.calls)
+                          if len(argv) > 2 and argv[2].endswith("scan-image.py"))
+        creates = [index for index, argv in enumerate(fixture.calls) if argv[:2] == ["docker", "create"]]
+        self.assertTrue(creates)
+        self.assertTrue(all(index > scan_index for index in creates))
+        exported = json.loads((output / "image-manifest.json").read_text())
+        self.assertEqual(exported["source_revision"], SOURCE_REVISION)
+        self.assertEqual(exported["critical_source_digest"], provenance["critical_source_digest"])
+        self.assertNotIn("image_archive_sha256", exported)
+
+    def test_reuse_allows_host_profile_changes(self):
+        fixture = DockerFixture(image_revision=SOURCE_REVISION)
+        manifest = reused_manifest(fixture)
+        fixture.trees[REVISION]["scripts/diagnostic/camact-gvisor-diagnostic-v1.profile"] = (
+            "100644", "blob", "f" * 40)
+        report, _ = self.invoke(fixture, manifest)
+        self.assertEqual(report["outcome"], "PASS")
+
+    def test_dirty_critical_tracked_sources_fail_before_image_scan(self):
+        for path in BASE_TREE.keys() - controller.REUSE_SAFE_FILES:
+            for reused in (False, True):
+                with self.subTest(path=path, reused=reused):
+                    fixture = DockerFixture(image_revision=SOURCE_REVISION if reused else REVISION)
+                    fixture.dirty_paths.add(path)
+                    manifest = reused_manifest(fixture) if reused else None
+                    report, _ = self.invoke(fixture, manifest)
+                    self.assertEqual(report["outcome"], "FAIL")
+                    self.assertFalse(fixture.scan_seen)
+                    self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_dirty_reviewed_host_files_are_allowed_by_exact_pathspec(self):
+        fixture = DockerFixture()
+        fixture.dirty_paths.update(controller.REUSE_SAFE_FILES)
+        report, _ = self.invoke(fixture)
+        self.assertEqual(report["outcome"], "PASS")
+        checks = [argv for argv in fixture.calls if argv[0] == "git" and "diff" in argv]
+        self.assertEqual(len(checks), 1)
+
+    def test_reuse_rejects_each_changed_core_probe_and_lock_before_scan(self):
+        for path in BASE_TREE.keys() - controller.REUSE_SAFE_FILES:
+            with self.subTest(path=path):
+                fixture = DockerFixture(image_revision=SOURCE_REVISION)
+                manifest = reused_manifest(fixture)
+                fixture.trees[REVISION][path] = ("100644", "blob", "d" * 40)
+                report, output = self.invoke(fixture, manifest)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(fixture.scan_seen)
+                self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+                self.assertFalse((output / "image-manifest.json").exists())
+
+    def test_reuse_rejects_manifest_identity_version_digest_and_checksum_mismatches(self):
+        changes = {
+            "schema": "unexpected.schema",
+            "image_id": "sha256:" + "d" * 64,
+            "source_revision": "d" * 40,
+            "version": "0.1.0-rc.2",
+            "critical_source_digest": "d" * 64,
+            "image_archive_sha256": "invalid",
+        }
+        for field, value in changes.items():
+            with self.subTest(field=field):
+                fixture = DockerFixture(image_revision=SOURCE_REVISION)
+                manifest = reused_manifest(fixture)
+                manifest[field] = value
+                report, _ = self.invoke(fixture, manifest)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(fixture.scan_seen)
+                self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_reuse_rejects_missing_manifest_fields_and_invalid_image_identity(self):
+        for field in ("schema", "image_id", "source_revision", "version", "critical_source_digest", "image_archive_sha256"):
+            with self.subTest(missing=field):
+                fixture = DockerFixture(image_revision=SOURCE_REVISION)
+                manifest = reused_manifest(fixture)
+                del manifest[field]
+                report, _ = self.invoke(fixture, manifest)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(fixture.scan_seen)
+        for field, value in (("image_id", "sha256:invalid"), ("image_version", "0.1.0-rc.2"),
+                             ("image_revision", "invalid")):
+            with self.subTest(identity=field):
+                fixture = DockerFixture(image_revision=SOURCE_REVISION)
+                manifest = reused_manifest(fixture)
+                setattr(fixture, field, value)
+                report, _ = self.invoke(fixture, manifest)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(fixture.scan_seen)
+                self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_reuse_requires_the_source_commit_to_be_available_locally(self):
+        fixture = DockerFixture(image_revision=SOURCE_REVISION)
+        manifest = reused_manifest(fixture)
+        del fixture.trees[SOURCE_REVISION]
+        report, _ = self.invoke(fixture, manifest)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertFalse(fixture.scan_seen)
+        self.assertFalse(any("fetch" in argv for argv in fixture.calls))
+        self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_explicit_null_manifest_cannot_fall_back_to_fresh_image_validation(self):
+        fixture = DockerFixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "reuse-manifest.json"
+            path.write_text("null", encoding="utf-8")
+            with mock.patch.object(controller.diag, "command", side_effect=fixture):
+                report = controller.Controller(Path(directory) / "production-plan").run(
+                    "camact:gvisor-diagnostic", reused_image_manifest=path)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertFalse(fixture.scan_seen)
+        self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_old_revision_without_a_reuse_manifest_is_rejected(self):
+        fixture = DockerFixture(image_revision=SOURCE_REVISION)
+        report, _ = self.invoke(fixture)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertFalse(fixture.scan_seen)
+        self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_reuse_scan_failure_still_prevents_all_containers_and_manifest_export(self):
+        fixture = DockerFixture(image_revision=SOURCE_REVISION, scan_pass=False)
+        report, output = self.invoke(fixture, reused_manifest(fixture))
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertTrue(fixture.scan_seen)
+        self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+        self.assertFalse((output / "image-manifest.json").exists())
+
+    def test_successful_scan_exports_manifest_even_if_runtime_or_compose_later_fails(self):
+        inner = inner_report()
+        inner["outcome"] = "FAIL"
+        for failure in ("inner", "compose"):
+            with self.subTest(failure=failure):
+                fixture = DockerFixture(report=inner if failure == "inner" else None)
+                if failure == "compose":
+                    fixture.source["services"].pop("storage-init")
+                report, output = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "FAIL")
+                exported = json.loads((output / "image-manifest.json").read_text())
+                self.assertEqual(exported["source_revision"], REVISION)
+                self.assertEqual(report["scanned_image_manifest"], "image-manifest.json")
 
     def test_create_timeout_still_removes_any_created_container(self):
         for role in ("helper", "runner"):

@@ -27,6 +27,15 @@ INNER_SCHEMA = "camact.gvisor.production-plan.v1"
 CANARY = "camact-production-plan-synthetic-secret-only\n"
 CAPTURE_BYTES = 2 * 1024 * 1024
 ARTIFACT_BYTES = 4 * 1024 * 1024
+IMAGE_MANIFEST_SCHEMA = "camact.gvisor.diagnostic-image.v1"
+# These files configure the host-side diagnostic only. The in-image probe,
+# every runtime/core module, Dockerfile, Compose, scanner and lock stay critical.
+REUSE_SAFE_FILES = frozenset({
+    ".github/workflows/diagnose-gvisor.yml",
+    "scripts/diagnostic/camact-gvisor-diagnostic-v1.profile",
+    "scripts/diagnostic/production-plan-controller.py",
+    "tests/test_production_plan_controller.py",
+})
 INNER_REQUIRED = {
     "outer_policy", "secret_fixture", "runtime_version", "plan_layout", "guest_exit",
     "guest_evidence", "lifecycle", "credential_evidence", "fixture_cleanup",
@@ -43,6 +52,73 @@ class Stop(Exception):
 
 def command(argv, timeout=20):
     return diag.command(argv, timeout=timeout)
+
+
+def critical_source_digest(revision):
+    """Hash the committed tree, excluding only four reviewed host-side files.
+
+    Quoted Git paths make newlines and arbitrary filename bytes unambiguous
+    despite the shared command helper's text interface. No blob is executed.
+    """
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("A full source commit SHA is required")
+    kind = command(["git", "-C", ROOT, "cat-file", "-t", revision], timeout=30)
+    if kind["returncode"] or kind.get("timed_out") or kind["stdout"].strip() != "commit":
+        raise ValueError("Source commit is not available locally")
+    tree = command(["git", "-C", ROOT, "-c", "core.quotepath=true", "ls-tree", "-r", "--full-tree", revision], timeout=30)
+    if tree["returncode"] or tree.get("timed_out"):
+        raise ValueError("Source tree is not available locally")
+    records = []
+    seen = set()
+    for line in tree["stdout"].splitlines():
+        metadata, separator, path = line.partition("\t")
+        if (not separator or not path or path in seen
+                or not re.fullmatch(r"[0-7]{6} (?:blob|commit) (?:[0-9a-f]{40}|[0-9a-f]{64})", metadata)):
+            raise ValueError("Malformed source tree inventory")
+        seen.add(path)
+        if path not in REUSE_SAFE_FILES:
+            records.append(line)
+    if not records:
+        raise ValueError("Critical source tree inventory is empty")
+    payload = "camact-critical-source-v1\0" + "\0".join(records) + "\0"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def image_provenance(identity, current_revision, manifest=None):
+    """Validate provenance before the independent, mandatory image rescan."""
+    if not isinstance(identity, dict):
+        raise ValueError("Image identity is malformed")
+    image_id, source_revision = identity.get("id"), identity.get("revision")
+    if (not isinstance(image_id, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id)
+            or not isinstance(source_revision, str) or not re.fullmatch(r"[0-9a-f]{40}", source_revision)
+            or identity.get("version") != VERSION):
+        raise ValueError("Image identity is not an approved diagnostic release")
+    if manifest is None:
+        if source_revision != current_revision:
+            raise ValueError("A fresh image must identify the current commit")
+    else:
+        if not isinstance(manifest, dict) or manifest.get("schema") != IMAGE_MANIFEST_SCHEMA:
+            raise ValueError("Reused image manifest schema is invalid")
+        if (manifest.get("image_id") != image_id or manifest.get("source_revision") != source_revision
+                or manifest.get("version") != VERSION
+                or not isinstance(manifest.get("critical_source_digest"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", manifest["critical_source_digest"])
+                or not isinstance(manifest.get("image_archive_sha256"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", manifest["image_archive_sha256"])):
+            raise ValueError("Reused image manifest identity or checksum is invalid")
+    current_digest = critical_source_digest(current_revision)
+    source_digest = current_digest if source_revision == current_revision else critical_source_digest(source_revision)
+    if source_digest != current_digest or (manifest is not None and manifest["critical_source_digest"] != source_digest):
+        raise ValueError("Critical image source changed; a fresh build is required")
+    result = {"reused": manifest is not None, "current_revision": current_revision,
+              "source_revision": source_revision, "critical_source_digest": source_digest,
+              "current_critical_source_digest": current_digest, "image_id": image_id, "version": VERSION}
+    if manifest is not None:
+        # The workflow verifies the tar checksum before docker load. Here the
+        # loaded content ID is checked and the entire image is scanned again.
+        result["image_archive_sha256"] = manifest["image_archive_sha256"]
+        result["archive_checksum_scope"] = "workflow_before_load"
+    return result
 
 
 def status(item):
@@ -164,6 +240,7 @@ class Controller:
         self.runner_created = False
         self.fixture_owned = False
         self.since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        self.image_manifest = None
 
     def check(self, name, passed, detail="", *, stop=True):
         self.report["tests"].append(diag.row("controller", name, "PASS" if passed else "FAIL", detail=detail))
@@ -199,7 +276,7 @@ class Controller:
         override.write_text("services:\n  runner:\n    env_file: !reset []\n    environment: !reset {}\n"
                             "    secrets: !reset []\n    volumes: !reset []\n"
                             "  storage-init:\n    volumes: !reset []\nsecrets: !reset {}\n", encoding="utf-8")
-        result = self.execute("compose_read", ["docker", "compose", "--env-file", "/dev/null", "-f", ROOT / "compose.yaml",
+        result = self.execute("compose_read", ["docker", "compose", "--profile", "tools", "--env-file", "/dev/null", "-f", ROOT / "compose.yaml",
                               "-f", override, "config", "--format", "json", "--no-env-resolution", "--no-consistency"])
         source = json.loads(result["stdout"])
         runner, storage = source["services"]["runner"], source["services"]["storage-init"]
@@ -344,8 +421,9 @@ class Controller:
         self.report["probe_artifacts"] = files
         self.check("inner_report", not errors, ", ".join(errors))
 
-    def run(self, image):
+    def run(self, image, reused_image_manifest=None):
         self.output.mkdir(parents=True, exist_ok=False)
+        self.report["image_reuse_requested"] = reused_image_manifest is not None
         try:
             revision = self.execute("git_revision", ["git", "-C", ROOT, "rev-parse", "HEAD"])["stdout"].strip()
             self.check("git_revision_shape", bool(re.fullmatch(r"[0-9a-f]{40}", revision)))
@@ -353,15 +431,32 @@ class Controller:
             value = json.loads(self.execute("image_inspect", ["docker", "image", "inspect", "--format", template, image])["stdout"])
             self.image_id = value.get("id")
             self.check("image_identity", bool(re.fullmatch(r"sha256:[0-9a-f]{64}", self.image_id or ""))
-                       and value.get("revision") == revision and value.get("version") == VERSION
+                       and value.get("version") == VERSION
                        and value.get("os") == "linux" and value.get("architecture") == "amd64")
             self.report["image_identity"] = value
+            manifest = None
+            if reused_image_manifest is not None:
+                path = Path(reused_image_manifest)
+                self.check("reuse_manifest_file", path.is_file() and not path.is_symlink() and path.stat().st_size <= 65536)
+                manifest = json.loads(path.read_text(encoding="utf-8"))
+                self.check("reuse_manifest_format", isinstance(manifest, dict), "An explicit reuse manifest must be a JSON object")
+            try:
+                provenance = image_provenance(value, revision, manifest)
+            except (ValueError, KeyError, TypeError) as exc:
+                self.check("image_provenance", False, str(exc))
+            self.report["image_provenance"] = provenance
+            self.check("image_provenance", True, "Committed critical sources match the immutable image source")
+            self.execute("critical_worktree_clean", ["git", "-C", ROOT, "diff", "--quiet", revision, "--", ".",
+                         *(":(top,literal,exclude)" + path for path in sorted(REUSE_SAFE_FILES))])
             scan = self.execute("image_scan_command", [sys.executable, "-B", ROOT / "scripts/scan-image.py", "--image", self.image_id], timeout=900)
             inventory = json.loads(scan["stdout"])
             self.check("image_scan", inventory.get("result") == "PASS" and inventory.get("issue_count") == 0
                        and inventory.get("issues") == [] and inventory.get("candidate_values_printed") is False)
             self.scanned = True
             self.report["image_scan"] = diag.clean(inventory)
+            self.image_manifest = {"schema": IMAGE_MANIFEST_SCHEMA, "image_id": self.image_id,
+                                   "source_revision": provenance["source_revision"], "version": VERSION,
+                                   "critical_source_digest": provenance["critical_source_digest"]}
             service, storage = self.compose()
             self.check("new_fixture", not self.fixture.exists() and self.safe_fixture())
             self.fixture.mkdir(mode=0o700)
@@ -409,6 +504,9 @@ class Controller:
             except Exception as exc:
                 self.report["audit_access"] = [diag.row("audit", "collector", "SKIP", detail=type(exc).__name__)]
                 self.report["audit_events"] = []
+            if self.scanned and self.image_manifest is not None:
+                (self.output / "image-manifest.json").write_text(json.dumps(self.image_manifest, indent=2) + "\n", encoding="utf-8")
+                self.report["scanned_image_manifest"] = "image-manifest.json"
             tests = self.report["tests"]
             self.report["outcome"] = "PASS" if tests and all(status(item) == "PASS" for item in tests) and any(
                 item["test"] == "inner_report" and item["status"] == "PASS" for item in tests) else "FAIL"
@@ -426,9 +524,11 @@ def main(argv=None):
     parser.add_argument("--image", default="camact:gvisor-diagnostic")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--skip-check-runtimes", action="store_true")
+    parser.add_argument("--reused-image-manifest", type=Path)
     args = parser.parse_args(argv)
     os.umask(0o077)
-    report = Controller(args.output, check_runtimes=not args.skip_check_runtimes).run(args.image)
+    report = Controller(args.output, check_runtimes=not args.skip_check_runtimes).run(
+        args.image, reused_image_manifest=args.reused_image_manifest)
     print(json.dumps({"schema": report["schema"], "outcome": report["outcome"], "model_requests": False}))
     return 0 if report["outcome"] == "PASS" else 1
 
