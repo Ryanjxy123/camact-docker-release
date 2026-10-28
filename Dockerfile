@@ -49,7 +49,7 @@ ENV CAMACT_DATA_ROOT=/var/lib/camact CAMACT_RESULTS_ROOT=/var/lib/camact/results
     HF_HOME=/var/lib/camact/cache/huggingface HF_XET_CACHE=/var/lib/camact/cache/huggingface/xet \
     HF_HUB_DISABLE_IMPLICIT_TOKEN=1 HF_HUB_DISABLE_TELEMETRY=1 HF_HUB_DISABLE_PROGRESS_BARS=1 \
     CAMACT_IMAGE_VERSION=$VERSION CAMACT_SOURCE_REVISION=$SOURCE_REVISION \
-    CAMACT_TEST_OUTPUT=/tmp/camact-tests \
+    CAMACT_TEST_OUTPUT=/tmp/camact-tests CAMACT_TEST_ARCHIVE=/tmp/camact-tests \
     HOME=/run/camact/home PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
     PYTHONPATH="/opt/camact:/opt/camact/benchmark:/opt/camact/deployment:/opt/camact/harness/camact_multi_harness_v1:/opt/camact/harness/claude code:/opt/camact/harness/baseline harness" \
     PATH=/opt/camact/.tools/node/bin:/usr/local/bin:/usr/bin:/bin

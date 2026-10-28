@@ -27,6 +27,7 @@ def main():
     destination = destination.resolve()
     destination.mkdir(parents=True, exist_ok=True)
     os.environ["CAMACT_TEST_OUTPUT"] = str(destination)
+    os.environ.setdefault("CAMACT_TEST_ARCHIVE", str(destination))
     from release import runner  # Configure the same import roots as production.
 
     suite = unittest.TestSuite(unittest.defaultTestLoader.loadTestsFromName(
