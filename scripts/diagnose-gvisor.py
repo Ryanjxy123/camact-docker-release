@@ -515,6 +515,24 @@ def diagnose(output):
         tests.append(command_row("docker", "base_image", result))
         if result["returncode"]:
             return 1
+        stage = "docker.base_identity"
+        identity = command(["docker", "image", "inspect", "--format", "{{.Id}}", image])
+        tests.append(command_row("docker", "base_identity", identity))
+        image_id = identity["stdout"].strip()
+        if identity["returncode"] or not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+            tests.append(row("docker", "base_identity_format", "FAIL", detail="Immutable image identity missing"))
+            return 1
+        stage = "docker.base_image_security_scan"
+        scan = command([sys.executable, "-B", ROOT / "scripts/scan-image.py", "--image", image_id], 180)
+        tests.append(command_row("docker", "base_image_security_scan", scan))
+        if scan["returncode"]:
+            return 1
+        scan_report = json.loads(scan["stdout"])
+        if scan_report.get("result") != "PASS" or scan_report.get("issue_count") != 0:
+            tests.append(row("docker", "base_scan_report", "FAIL", detail="Image scan did not report PASS"))
+            return 1
+        report["base_image_scan"] = {key: scan_report[key] for key in
+            ("result", "issue_count", "files_scanned", "bytes_scanned")}
         assets = work / "assets"
         assets.mkdir(mode=0o755)
         assets.chmod(0o755)
@@ -530,10 +548,10 @@ def diagnose(output):
         (assets / "metadata.json").write_text(json.dumps({"version": entry["version"], "flags": flags}))
         (assets / "metadata.json").chmod(0o444)
         report["runtime"] = {"version": entry["version"], "sha512": entry["sha512"], "flags": flags,
-                             "base_image": image}
+                             "base_image": image, "image_id": image_id}
         stage = "docker.create"
         created = True  # A timed-out create may have created the container.
-        result = command(docker_arguments(service, assets, name, image))
+        result = command(docker_arguments(service, assets, name, image_id))
         tests.append(command_row("docker", "create", result))
         if result["returncode"]:
             return 1

@@ -185,6 +185,9 @@ class DiagnosticsTests(unittest.TestCase):
                             diag.row("gvisor", "delete", "PASS")], "runsc_debug": "diagnostic fixture"}
 
         def command(argv, *args, **kwargs):
+            if str(argv[2]).endswith("scan-image.py"):
+                return result(stdout=json.dumps({"result": "PASS", "issue_count": 0,
+                    "files_scanned": 1, "bytes_scanned": 1}))
             self.assertEqual(argv[0], "docker")
             calls.append(argv[1])
             if argv[1] == "info":
@@ -198,6 +201,8 @@ class DiagnosticsTests(unittest.TestCase):
                 self.assertIn("--user", argv)
                 self.assertEqual(argv[argv.index("--user") + 1], "10001:10001")
                 return result(stdout="container fixture")
+            if argv[1:3] == ["image", "inspect"]:
+                return result(stdout="sha256:" + "7" * 64)
             if argv[1] == "start":
                 return result(stdout=json.dumps(nested))
             if argv[1] == "rm":
@@ -220,7 +225,7 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(report["outcome"], "FAIL")
             failure = next(r for r in report["tests"] if r["layer"] == "docker" and r["test"] == "user_mount.unshare")
             self.assertEqual(failure["errno_name"], "EPERM")
-        self.assertEqual(calls, ["info", "pull", "create", "start", "rm"])
+        self.assertEqual(calls, ["info", "pull", "image", "create", "start", "rm"])
         self.assertFalse(assets_path[0].exists())
 
 

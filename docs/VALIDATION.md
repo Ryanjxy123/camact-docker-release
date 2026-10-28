@@ -1,8 +1,43 @@
 # 发布验收记录
 
-验收日期：2026-10-28。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待本轮修复后的完整 Docker Actions 验收。
+验收日期：2026-10-29。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待云端诊断及完整 Docker Actions 验收。
 
-## Run #4 whiteout 修复与发布前预检（本轮）
+## Run #5 缓存修复与诊断
+
+[Run #5 / `40716448471`](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40716448471)
+对应 `c0348b307ab4f0be2e990356ef2b967a6d6488f8`。公开 API 确认构建成功、集成失败；
+本轮没有取得需要认证的原始日志和 Artifact，三项故障以本次任务给出的失败记录为依据。
+
+| 问题 | 状态 | 本轮证据与边界 |
+| --- | --- | --- |
+| 合成 HF 缓存两次复用 | **FIXED** | 旧 Shell 漏掉仓库名中的运行 ID，生成的目录与生产定位算法不一致。新 CLI 复用生产 `_lock` / `_location`，由真实 `ensure(offline=True)` 校验并生成完成标记。独立进程创建、两次复用、身份/路径一致性，以及缺失、同大小损坏、额外文件拒绝均通过；网络审计钩子与 Token 文件读取禁令生效。真实跨容器挂载仍留给 Docker 门禁 |
+| Compose 离线测试 | **NEEDS_CLOUD_VERIFICATION** | Python 3.13.11、Compose 对应环境变量下的原 161 项及最终 184 项全部通过，未复现云端断言；真实 UID 10001、只读根目录、Secrets 和 tmpfs 挂载未在本机重建。没有修改断言预期或测评行为 |
+| 容器内 gVisor | **NEEDS_CLOUD_VERIFICATION** | 本机宿主视角的 Namespace、挂载与生产最小生命周期通过，不等于 Docker 内通过。新增逐 syscall 阶段/errno、安全状态、版本/参数/sidecar/写权限检查及运行/清理诊断；EPERM 本身仍不能区分 AppArmor、seccomp、内核限额和 runsc 的实际失败操作 |
+
+修改范围限于验收工具、诊断、回归测试和文档：
+
+- `scripts/verify-benchmark-cache.py` 同时服务缓存创建和两次复用，不再在 Shell 拼接生产目录或伪造完成标记。测试只使用临时合成内容，没有读取或修改完整 HF 缓存。
+- `scripts/run-offline-tests.py` 与 `release/diagnostics.py` 输出独立结构化诊断：测试名、异常类型、断言方法、隐藏字面值的断言源码、相对源码 traceback、UID/GID、临时/输出/存储目录权限及写入探针。不输出异常值、局部变量、subtest 参数、完整环境或实际路径；初始化失败也保留诊断。
+- `scripts/verify-docker.sh` 保留全部严格门禁，新增宿主/容器诊断及两份离线测试 JSON 的收集；原始日志仍在 `private/`，上传只增加四个明确命名的诊断文件。合成 Runner 使用 `network_mode: none`，本地协议服务仍在同一容器的 loopback 内。
+- `scripts/gvisor-preflight.py` 使用真实生产 OCI builder 执行最小 guest 与清理；Namespace syscall 探针复用轻量诊断脚本。新的手动 [gVisor 诊断入口](GVISOR_DIAGNOSTICS.md) 使用固定基础镜像、同一 seccomp/Compose 安全参数和 SHA512 认证的 runsc，执行前扫描源码与不可变基础镜像；它没有发布权限，也不能批准完整验收。
+
+最终本地验证：Python 3.13.11 **184 项通过，零失败/错误/跳过**（保留原有 161 项，增加 23 项）；
+源码安全扫描、全部 Shell 语法、三个 Workflow 的 actionlint、Python 语法与 diff 检查通过。
+官方 Compose 2.40.3 实际解析了生产配置、验收配置以及清除凭据字段的 `!reset` overlay；
+逐字段核对 UID、cap_drop、security_opt、只读根目录、PID 限制、tmpfs 保持一致。
+Docker 协议 stub 只证明脚本的失败收集、脱敏、扫描前置和清理顺序，不是 Docker 运行证据。
+本轮证据在独立工作区的忽略目录 `.validation/run5-preflight/`。
+
+Dockerfile、依赖/例外锁、生产 Compose、初始化/持久化实现、Benchmark、GT、Rubric、Simulator、
+Baseline、Unified Evaluator 和六套 Harness 核心文件与 Run #5 源码保持一致。
+未安装或运行 Docker、提权、启动正式 Benchmark、调用付费模型、触发 Actions 或发布 GHCR。
+
+下一步先在 main 手动运行 **Diagnose gVisor environment**，依据 Artifact 的 host/docker/gvisor
+失败阶段及对应审计字段定位；安全条件不匹配或必要探针跳过会标为 INCOMPLETE，不能视为通过。
+基础诊断通过后，再手动执行完整 Docker Actions，设置 `publish=false`，核实 Compose 的具体断言、
+缓存跨容器复用和完整原生矩阵。任何宿主策略修复须依据真实拒绝证据另行评审，本轮未放宽策略。
+
+## Run #4 whiteout 修复与发布前预检（历史）
 
 失败记录为 [Run #4 / `40696049225`](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40696049225)，源码为 `1d7b69ed9769b93c99ec96635dd5b941fdb6490e`。真实诊断中恰有 15 条 `personal_config_or_credential_path`，全部位于 `layer[4]:etc/ssl/certs/.wh.<CA 名称>.pem`；构建、151 项离线测试和依赖/运行时检查已经通过，GHCR 步骤跳过。
 

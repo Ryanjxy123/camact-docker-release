@@ -66,6 +66,9 @@ jobs:
             .validation/docker-gates-*/image-security-scan.json
             .validation/docker-gates-*/verification-summary.json
             .validation/docker-gates-*/sandbox-preflight.json
+            .validation/docker-gates-*/host-sandbox-preflight.json
+            .validation/docker-gates-*/offline-tests-network-disabled.json
+            .validation/docker-gates-*/offline-tests-compose.json
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7

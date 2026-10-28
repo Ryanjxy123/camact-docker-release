@@ -21,6 +21,8 @@
    PID 限制和三项 tmpfs，加载原 seccomp 文件；继承默认 AppArmor，不传入替代 profile。
    在执行相同 namespace/mount/network 探针前，检查 Docker inspect 的实际安全设置，
    在容器内复核 UID/GID、CapEff/CapBnd、NoNewPrivs、Seccomp 和 AppArmor。
+   基础镜像先解析为不可变 image ID，经现有 `scan-image.py` 扫描通过后才允许创建容器；
+   Workflow 也在探针开始前执行追踪源码安全扫描。
 3. **gvisor**：只下载 `locks/runtimes.json` 锁定的官方 gVisor 包，验证 SHA512，保留
    runsc 所需 sidecar。从生产 `gvisor.py` 读取并校验 Systrap、network=none、
    gofer-network-namespace=new、ignore-cgroups、host-uds=open 参数。
@@ -66,7 +68,10 @@ runsc 原始 debug 仅位于临时状态目录，脱敏后写入报告，随后�
 
 ## 本地检查
 
-脚本仅依赖 Linux、标准库 Python ≥3.11.4（tarfile data filter）、Docker Engine/Compose
+控制器只在具备完整 Docker 条件的独立主机或 GitHub Runner 执行；当前受限 Kubernetes
+服务器仅运行离线回归和宿主探针，不运行以下 Docker 控制器命令。
+
+脚本依赖 Linux、标准库 Python ≥3.11.4（tarfile data filter）、Docker Engine/Compose
 （支持 `!reset`）和公开下载网络。Compose overlay 会在解析前清除 env_file、environment、
 secrets、数据卷，并用 `--env-file /dev/null`，避免读取现有模型配置。
 

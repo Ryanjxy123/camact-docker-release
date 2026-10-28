@@ -18,16 +18,42 @@ camact_verify_finish() {
 import json
 import sys
 from pathlib import Path
+from release.diagnostics import PREFIX
 stages = []
+diagnostics = {
+    "network-disabled-offline-tests": ("camact.offline-diagnostics.v1", "offline-tests-network-disabled.json"),
+    "offline-tests-in-compose": ("camact.offline-diagnostics.v1", "offline-tests-compose.json"),
+    "host-sandbox-preflight": ("camact.sandbox-diagnostics.v1", "host-sandbox-preflight.json"),
+    "runner-sandbox-preflight": ("camact.sandbox-diagnostics.v1", "sandbox-preflight.json"),
+}
 for line in Path(sys.argv[1]).read_text().splitlines():
     stage, result, code, dependency = line.split("\t")
     item = {"stage": stage, "result": result, "exit_code": int(code)}
     if dependency:
         item["dependency"] = dependency
+    log = Path(sys.argv[1]).parent / (stage + ".log")
+    if stage in diagnostics and log.is_file():
+        schema, filename = diagnostics[stage]
+        item["diagnostics_status"] = "missing"
+        for entry in log.read_text(errors="replace").splitlines():
+            if not entry.startswith(PREFIX):
+                continue
+            try:
+                value = json.loads(entry[len(PREFIX):])
+            except ValueError:
+                continue
+            if not isinstance(value, dict) or value.get("schema") != schema:
+                continue
+            # Only the dedicated structured emitters are public. Never copy
+            # the surrounding unittest/Compose/runsc logs or exception text.
+            Path(sys.argv[2]).parent.joinpath(filename).write_text(json.dumps(value, indent=2) + "\n")
+            item["diagnostics_status"] = "recorded"
+            item["diagnostics_file"] = filename
+            if result == "FAIL" or value.get("diagnostic_only"):
+                print(json.dumps({"stage": stage, "diagnostics": value}, sort_keys=True))
     if result == "FAIL":
         # Fixed categories help diagnose CI without exposing exception text,
         # candidate values, command arguments, host paths or credential data.
-        log = Path(sys.argv[1]).parent / (stage + ".log")
         with log.open("rb") as stream:
             observed = stream.read(2 * 1024 * 1024).lower()
         categories = {b"operation not permitted": "operation_not_permitted",
@@ -122,6 +148,10 @@ runner["environment"] = {"CAMACT_DATA_ROOT": "/var/lib/camact",
     "CAMACT_OPENCLAW_TMPDIR": "/run/camact/openclaw",
     **{role + "_API_KEY_FILE": "/run/secrets/" + role.lower() + "_api_key"
        for role in ("AGENT", "JUDGE", "SIMULATOR")}}
+# All synthetic services are in-process loopback fixtures. Disable external
+# networking for the verification runner, including the offline cache checks.
+runner.pop("networks", None)
+runner["network_mode"] = "none"
 for service in (runner, storage):
     for volume in service.get("volumes", []):
         if volume["target"] == "/var/lib/camact":
@@ -202,6 +232,7 @@ camact_verify_scan() {
   python3 scripts/scan-image.py --image "$camact_verify_image_id" >"$camact_verify_archive/image-security-scan.json"
 }
 camact_verify_gate tracked-source-security-scan python3 scripts/scan-release.py --tracked
+camact_verify_run host-sandbox-preflight python3 -B scripts/gvisor-preflight.py --context host --namespace-only
 camact_verify_gate compose-initialization camact_verify_initialize
 camact_verify_gate candidate-build-or-inspection camact_verify_candidate
 camact_verify_gate image-identity camact_verify_identity
@@ -219,34 +250,10 @@ camact_verify_run network-disabled-offline-tests docker run --rm --network=none 
 camact_verify_run network-disabled-runtime-checks docker run --rm --network=none --entrypoint python "$camact_verify_image_id" -B scripts/check-runtimes.py
 camact_verify_fixture_repo="Fixture/Container-Smoke-$camact_verify_id"
 camact_verify_fixture_revision='0000000000000000000000000000000000000000'
-camact_verify_fixture_hash=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$camact_verify_fixture_repo")
-camact_verify_fixture_mount="/var/lib/camact/benchmark/Fixture--Container-Smoke-$camact_verify_fixture_hash/$camact_verify_fixture_revision"
 camact_verify_create_cache() {
-"${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B - "$camact_verify_fixture_mount" "$camact_verify_fixture_repo" "$camact_verify_fixture_revision" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-directory = Path(sys.argv[1])
-repo, revision = sys.argv[2:]
-directory.mkdir(parents=True, exist_ok=False)
-snapshot = directory / "snapshot"
-snapshot.mkdir(parents=True, exist_ok=False)
-data = b"camact-container-benchmark-smoke\n"
-relative = "fixture/task.yaml"
-path = snapshot / relative
-path.parent.mkdir()
-path.write_bytes(data)
-digest = hashlib.sha1(b"blob " + str(len(data)).encode() + b"\0" + data).hexdigest()
-manifest = {"schema": "camact.benchmark-cache.v1", "repo_id": repo, "revision": revision,
-            "files": {relative: {"size": len(data), "algorithm": "git-sha1", "digest": digest}}}
-(directory / "manifest.json").write_text(json.dumps(manifest, sort_keys=True) + "\n")
-encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
-(directory / "complete.json").write_text(json.dumps({"schema": manifest["schema"], "repo_id": repo,
-    "revision": revision, "file_count": 1, "total_bytes": len(data),
-    "manifest_sha256": hashlib.sha256(encoded).hexdigest()}, sort_keys=True) + "\n")
-PY
+  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/verify-benchmark-cache.py \
+    --cache-root /var/lib/camact/benchmark --repo "$camact_verify_fixture_repo" \
+    --revision "$camact_verify_fixture_revision" --create
 }
 camact_verify_compare_cache() {
 python3 - "$camact_verify_archive/private/benchmark-mount-1.json" "$camact_verify_archive/private/benchmark-mount-2.json" <<'PY'
@@ -261,45 +268,13 @@ print(json.dumps({"status": "PASS", "file_count": first["file_count"],
                   "manifest_sha256": first["manifest_sha256"]}, sort_keys=True))
 PY
 }
-camact_verify_benchmark_code='import json, os; from release.benchmark import ensure; repo=os.environ["CAMACT_VERIFY_REPO"]; revision=os.environ["CAMACT_VERIFY_REVISION"]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] == 1; print(json.dumps({"repo_id": repo, "revision": revision, "file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))'
 camact_verify_reuse_cache() {
-  "${camact_verify_compose[@]}" run --rm -T --entrypoint python \
-    -e CAMACT_VERIFY_REPO="$camact_verify_fixture_repo" \
-    -e CAMACT_VERIFY_REVISION="$camact_verify_fixture_revision" \
-    runner -B -c "$camact_verify_benchmark_code" >"$camact_verify_archive/private/benchmark-mount-$1.json"
+  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/verify-benchmark-cache.py \
+    --cache-root /var/lib/camact/benchmark --repo "$camact_verify_fixture_repo" \
+    --revision "$camact_verify_fixture_revision" >"$camact_verify_archive/private/benchmark-mount-$1.json"
 }
 camact_verify_preflight() {
-  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B -c '
-import json, subprocess
-from pathlib import Path
-status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines() if ":" in line)
-try:
-    confined = Path("/proc/self/attr/current").read_text().strip() != "unconfined"
-except OSError:
-    confined = None
-try:
-    probe = subprocess.run(["unshare", "--user", "--map-current-user", "--mount", "true"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode
-except (OSError, subprocess.TimeoutExpired):
-    probe = 125
-print(json.dumps({"diagnostic_only": True, "apparmor_confined": confined,
-    "seccomp_mode": int(status.get("Seccomp", "-1")), "no_new_privileges": int(status.get("NoNewPrivs", "-1")),
-    "user_mount_namespace_probe_exit_code": probe}))
-' >"$camact_verify_archive/private/sandbox-preflight-raw.json"
-  python3 - "$camact_verify_archive/private/sandbox-preflight-raw.json" "$camact_verify_archive/sandbox-preflight.json" <<'PY_PREFLIGHT'
-import json
-import sys
-from pathlib import Path
-value = json.loads(Path(sys.argv[1]).read_text())
-keys = {"diagnostic_only", "apparmor_confined", "seccomp_mode", "no_new_privileges", "user_mount_namespace_probe_exit_code"}
-if set(value) != keys or value["diagnostic_only"] is not True:
-    raise SystemExit("Unexpected sandbox preflight shape")
-if value["apparmor_confined"] is not None and type(value["apparmor_confined"]) is not bool:
-    raise SystemExit("Unexpected AppArmor diagnostic type")
-if any(type(value[key]) is not int for key in keys - {"diagnostic_only", "apparmor_confined"}):
-    raise SystemExit("Unexpected sandbox diagnostic type")
-Path(sys.argv[2]).write_text(json.dumps(value, sort_keys=True) + "\n")
-PY_PREFLIGHT
+  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/gvisor-preflight.py --context container
 }
 camact_verify_full_cache() {
   # Explicit opt-in only. The existing cache stays in place; all model config,

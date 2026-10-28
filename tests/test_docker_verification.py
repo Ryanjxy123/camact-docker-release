@@ -21,8 +21,11 @@ class DockerVerificationDiagnostics(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="camact-gate-regression-") as temporary:
             project = Path(temporary)
             (project / "scripts").mkdir()
-            for name in ("verify-docker.sh", "scan-image.py", "scan-release.py"):
+            for name in ("verify-docker.sh", "scan-image.py", "scan-release.py", "diagnose-gvisor.py", "gvisor-preflight.py", "verify-benchmark-cache.py"):
                 shutil.copy2(ROOT / "scripts" / name, project / "scripts" / name)
+            (project / "release").mkdir()
+            for name in ("__init__.py", "diagnostics.py"):
+                shutil.copy2(ROOT / "release" / name, project / "release" / name)
             shutil.copytree(ROOT / "locks", project / "locks")
             shutil.copy2(ROOT / "Dockerfile", project / "Dockerfile")
             (project / "camactctl").write_text("#!/bin/sh\nexit 0\n")
@@ -74,6 +77,14 @@ def outcome(stage):
     if stage in failures:
         print("Permission denied; private raw diagnostics: " + os.environ["CALLER_CANARY"])
         sys.exit(failures[stage])
+def offline_report(stage):
+    failed = stage in failures
+    print("CAMACT_DIAGNOSTIC_JSON=" + json.dumps({"schema": "camact.offline-diagnostics.v1",
+        "success": not failed, "testsRun": 1, "failures": int(failed), "errors": 0, "skipped": 0,
+        "uid": 10001, "gid": 10001, "paths": {}, "failure_details": [{
+            "test": "test_fixture.Offline.test_compose", "exception_type": "AssertionError",
+            "assertion_kind": "assertEqual", "traceback": [{"file": "tests/test_fixture.py", "line": 10,
+            "function": "test_compose"}]}] if failed else []}))
 if args[:2] == ["image", "inspect"]:
     if "--format" in args:
         print("sha256:" + "1" * 64)
@@ -87,7 +98,10 @@ elif args[:1] == ["save"]:
 elif args[:1] == ["run"]:
     assert "--network=none" in args
     assert "sha256:" + "1" * 64 in args
-    outcome("network-disabled-offline-tests" if "scripts/run-offline-tests.py" in args else "network-disabled-runtime-checks")
+    stage = "network-disabled-offline-tests" if "scripts/run-offline-tests.py" in args else "network-disabled-runtime-checks"
+    if stage == "network-disabled-offline-tests":
+        offline_report(stage)
+    outcome(stage)
 elif args[:1] == ["compose"]:
     assert not any(name in os.environ for name in ["COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_ENV_FILES"])
     assert args[args.index("--env-file") + 1] == "/dev/null"
@@ -122,6 +136,7 @@ elif args[:1] == ["compose"]:
         assert config["services"]["runner"]["image"] == "sha256:" + "1" * 64
         assert config["services"]["runner"]["user"] == "10001:10001"
         assert config["services"]["runner"]["read_only"] is True
+        assert config["services"]["runner"]["network_mode"] == "none"
         assert os.environ["CALLER_CANARY"] not in json.dumps(config)
         for secret in config["secrets"].values():
             assert pathlib.Path(secret["file"]).read_text() == "local-fixture-only"
@@ -135,17 +150,24 @@ elif args[:1] == ["compose"]:
         elif "scripts/check-codecs.py" in args:
             outcome("native-image-codecs")
         elif "scripts/run-offline-tests.py" in args:
+            offline_report("offline-tests-in-compose")
             outcome("offline-tests-in-compose")
+        elif "scripts/gvisor-preflight.py" in args:
+            outcome("runner-sandbox-preflight")
+            print("CAMACT_DIAGNOSTIC_JSON=" + json.dumps({"schema": "camact.sandbox-diagnostics.v1",
+                "diagnostic_only": True, "context": "container", "security": {"uid": 10001,
+                "seccomp_mode": 2, "no_new_privileges": 1}, "namespaces": {"user_mount": {"exit_code": 1,
+                "steps": [{"stage": "unshare_user", "errno": 1, "errno_name": "EPERM", "result": "FAIL"}]}},
+                "runsc": {"result": "FAIL", "stage": "runsc_run"}}))
+        elif "scripts/verify-benchmark-cache.py" in args:
+            outcome("synthetic-benchmark-cache-creation" if "--create" in args else "synthetic-benchmark-cache-reuse")
+            print(json.dumps({"file_count": 1, "manifest_sha256": "fixture-manifest"}))
         elif "scripts/native-loop-smoke.py" in args:
             stage = "native-loop-" + args[args.index("--harness") + 1] + "-" + args[args.index("--mode") + 1]
             outcome(stage)
         elif "-c" in args:
             code = args[args.index("-c") + 1]
-            if "diagnostic_only" in code:
-                outcome("runner-sandbox-preflight")
-                print(json.dumps({"diagnostic_only": True, "apparmor_confined": True,
-                    "seccomp_mode": 2, "no_new_privileges": 1, "user_mount_namespace_probe_exit_code": 1}))
-            elif "CAMACT_VERIFY_REPO" in code:
+            if "CAMACT_VERIFY_REPO" in code:
                 outcome("synthetic-benchmark-cache-reuse")
                 print(json.dumps({"file_count": 1, "manifest_sha256": "fixture-manifest"}))
             elif "p.write_text" in code:
@@ -233,6 +255,19 @@ else:
         self.assertEqual(stages["native-loop-codex-multi_turn"]["result"], "SKIP")
         self.assertEqual(stages["persistence-marker-recreated-container"]["result"], "PASS")
         self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
+
+    def test_offline_failure_exports_test_assertion_and_traceback_without_raw_logs(self):
+        process, summary, _, _, _, public = self.run_gate(failures={"offline-tests-in-compose": 1})
+        self.assertEqual(process.returncode, 1)
+        stages = {item["stage"]: item for item in summary["stages"]}
+        self.assertEqual(stages["offline-tests-in-compose"]["diagnostics_file"], "offline-tests-compose.json")
+        for value in (public, process.stdout):
+            self.assertIn("test_fixture.Offline.test_compose", value)
+            self.assertIn("assertEqual", value)
+            self.assertIn("tests/test_fixture.py", value)
+            self.assertNotIn(CALLER_CANARY, value)
+        self.assertIn('"stage": "unshare_user"', public)
+        self.assertIn('"context": "host"', public)
 
     def test_nested_initialization_failure_cannot_be_hidden_by_later_command(self):
         process, summary, scan, calls, _, public = self.run_gate(failures={"compose-source": 37})
