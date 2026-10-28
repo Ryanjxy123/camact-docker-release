@@ -85,6 +85,22 @@ def readonly_bind_flags(source):
     return flags
 
 
+def mount_state(path):
+    """Observe only mount flags for this disposable diagnostic fixture."""
+    try:
+        flags = os.statvfs(path).f_flag
+        names = [label for label, constant in (("ro", "ST_RDONLY"), ("nosuid", "ST_NOSUID"),
+            ("nodev", "ST_NODEV"), ("noexec", "ST_NOEXEC"), ("noatime", "ST_NOATIME"),
+            ("nodiratime", "ST_NODIRATIME"), ("relatime", "ST_RELATIME"))
+            if flags & getattr(os, constant, 0)]
+        if not flags & os.ST_RDONLY:
+            names.insert(0, "rw")
+        return dict(status="PASS", f_flag=flags, mount_flags=names,
+                    exec_allowed=not bool(flags & os.ST_NOEXEC))
+    except OSError as exc:
+        return dict(status="SKIP", errno=exc.errno, errno_name=errno.errorcode.get(exc.errno))
+
+
 def clean(value):
     if isinstance(value, dict):
         return {str(k): clean(v) for k, v in value.items()}
@@ -319,6 +335,11 @@ def gvisor_tests(work, runsc, flags, version, debug_chunks=None):
     state = Path(tempfile.mkdtemp(prefix="gvisor-", dir=work))
     for name in ("rootfs", "tmp", "home"):
         (state / name).mkdir(mode=0o700)
+    rootfs_mount = mount_state(state / "rootfs")
+    tests.append(row("gvisor", "rootfs_mount_flags", "PASS" if rootfs_mount.get("exec_allowed")
+                     and "rw" in rootfs_mount.get("mount_flags", []) else "FAIL",
+                     detail="Actual OCI rootfs source must inherit exec-capable writable storage",
+                     observed=rootfs_mount))
     uid, gid = os.getuid(), os.getgid()
     mounts = [{"type": "bind", "source": source, "destination": source,
                "options": ["rbind", "nosuid", "nodev", "ro"]}
@@ -392,6 +413,13 @@ def inside(assets):
                and int(ps.get("CapBnd", "1"), 16) == 0)
     tests = [row("docker", "process_policy", "PASS" if matches else "FAIL",
                  detail="UID/GID=10001, CapEff=CapBnd=0, NoNewPrivs=1, Seccomp=2")]
+    storage_mount = mount_state(Path("/var/lib/camact"))
+    observed["fixture_storage"] = storage_mount
+    matches = (storage_mount.get("exec_allowed") is True
+               and {"rw", "nosuid", "nodev"}.issubset(storage_mount.get("mount_flags", [])))
+    tests.append(row("docker", "storage_mount_flags", "PASS" if matches else "FAIL",
+                     detail="Diagnostic tmpfs requires rw,nosuid,nodev,exec; production bind storage remains unverified",
+                     observed=storage_mount))
     debug, debug_chunks = "", []
     stage = "namespace_collector"
     try:
@@ -466,7 +494,7 @@ def docker_arguments(service, assets, name, image, apparmor_profile="docker-defa
             "--security-opt=apparmor=" + apparmor_profile]
     for mount in service["tmpfs"]:
         args += ["--tmpfs", mount]
-    args += ["--tmpfs", "/var/lib/camact:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
+    args += ["--tmpfs", "/var/lib/camact:rw,nosuid,nodev,exec,size=64m,uid=10001,gid=10001,mode=0700",
              "--mount", f"type=bind,src={assets},dst=/diagnostic,readonly",
              "--env", "HOME=/run/camact/home", "--env", "PYTHONDONTWRITEBYTECODE=1",
              "--entrypoint", "python3", image, "-B", "/diagnostic/diagnose-gvisor.py", "--inside", "/diagnostic"]
@@ -555,13 +583,13 @@ def summarize(report):
     tests = report["tests"]
     required = [t for t in tests if t["layer"] != "audit" and t["test"] != "production_equivalence"]
     nested_required = {("docker", name) for name in
-        ("effective_policy", "started_policy", "collector", "process_policy", "apparmor_parity", "container_cleanup", "original_unshare")}
+        ("effective_policy", "started_policy", "collector", "process_policy", "storage_mount_flags", "apparmor_parity", "container_cleanup", "original_unshare")}
     for probe_name in PROBES:
         nested_required.update(("docker", probe_name + "." + name) for name in ("unshare", "setgroups", "uid_map", "gid_map"))
     nested_required.update(("docker", name) for name in ("user_mount.exec_true", "net.unshare_net", "mount.private", "mount.tmpfs",
         "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount",
         "mount.outside_denied"))
-    nested_required.update(("gvisor", name) for name in ("version", "run", "delete", "state_absent", "child_reaping", "directory_cleanup"))
+    nested_required.update(("gvisor", name) for name in ("version", "rootfs_mount_flags", "run", "delete", "state_absent", "child_reaping", "directory_cleanup"))
     nested = [t for t in required if t["layer"] in ("docker", "gvisor")]
     passed = {(t["layer"], t["test"]) for t in nested if t["status"] == "PASS"}
     missing = nested_required - passed
@@ -611,7 +639,7 @@ def diagnose(output, apparmor_profile="docker-default"):
         stage = "host.namespaces"
         tests += namespace_tests("host", work)
         tests.append(row("docker", "production_equivalence", "SKIP", detail=
-            "Use the exact digest-pinned Python runner base, not the full CamAct image; /var/lib/camact is a UID-10001 tmpfs fixture, not the production bind. No model config/secrets/CLI/Benchmark. Docker default bridge replaces Compose bridge. This is not full image/storage acceptance."))
+            "Use the exact digest-pinned Python runner base, not the full CamAct image; /var/lib/camact is a UID-10001 explicit-exec tmpfs fixture, not the production bind. Actual fixture/rootfs source flags are checked. No model config/secrets/CLI/Benchmark. Docker default bridge replaces Compose bridge. This is not full image/storage acceptance."))
         stage = "docker.compose_policy"
         service, item = compose_policy(work)
         tests.append(item)

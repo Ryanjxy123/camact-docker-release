@@ -80,6 +80,36 @@ class DiagnosticsTests(unittest.TestCase):
             required = diag.MS_BIND | diag.MS_REMOUNT | diag.MS_RDONLY | diag.MS_NOSUID | diag.MS_NODEV
             self.assertEqual(flags, required | expected)
 
+    def test_mount_state_distinguishes_exec_from_inherited_noexec(self):
+        for extra, expected in ((0, True), (os.ST_NOEXEC, False)):
+            with self.subTest(extra=extra), mock.patch.object(diag.os, "statvfs",
+                    return_value=SimpleNamespace(f_flag=os.ST_NOSUID | os.ST_NODEV | extra)):
+                observed = diag.mount_state(Path("/fixture"))
+            self.assertEqual(observed["exec_allowed"], expected)
+            self.assertEqual("noexec" in observed["mount_flags"], not expected)
+            self.assertTrue({"rw", "nosuid", "nodev"}.issubset(observed["mount_flags"]))
+        with mock.patch.object(diag.os, "statvfs", side_effect=OSError(errno.ENOENT, "Missing fixture")):
+            self.assertEqual(diag.mount_state(Path("/fixture"))["status"], "SKIP")
+
+    def test_fixture_storage_flags_are_required_and_recorded_inside(self):
+        observed = {"process_status": {"NoNewPrivs": "1", "Seccomp": "2", "CapEff": "0", "CapBnd": "0"}}
+        for flags, expected in ((os.ST_NOSUID | os.ST_NODEV, "PASS"),
+                (os.ST_NOSUID | os.ST_NODEV | os.ST_NOEXEC, "FAIL"), (os.ST_NOSUID, "FAIL")):
+            with self.subTest(flags=flags), tempfile.TemporaryDirectory() as directory:
+                assets = Path(directory)
+                (assets / "metadata.json").write_text(json.dumps({"flags": [], "version": "fixture"}))
+                output = io.StringIO()
+                with mock.patch.object(diag, "environment", return_value=dict(observed)), \
+                        mock.patch.object(diag.os, "getuid", return_value=10001), mock.patch.object(diag.os, "getgid", return_value=10001), \
+                        mock.patch.object(diag.os, "statvfs", return_value=SimpleNamespace(f_flag=flags)), \
+                        mock.patch.object(diag, "namespace_tests", return_value=[]), mock.patch.object(Path, "mkdir"), \
+                        mock.patch.object(diag, "gvisor_tests", return_value=([], "")), contextlib.redirect_stdout(output):
+                    diag.inside(assets)
+                report = json.loads(output.getvalue())
+                storage = next(item for item in report["tests"] if item["test"] == "storage_mount_flags")
+                self.assertEqual(storage["status"], expected)
+                self.assertEqual(report["environment"]["fixture_storage"]["f_flag"], flags)
+
     def test_outside_mount_requires_eacces_after_legal_mounts_and_cleans_unexpected_success(self):
         original_write = Path.write_text
         for denied_errno, expected in ((errno.EACCES, "PASS"), (errno.EPERM, "FAIL"), (None, "FAIL")):
@@ -247,6 +277,10 @@ class DiagnosticsTests(unittest.TestCase):
         for profile in diag.APPARMOR_PROFILES:
             args = diag.docker_arguments(service, Path("/fixture"), "fixture", "image", profile)
             self.assertIn("--security-opt=apparmor=" + profile, args)
+            storage = next(value for value in args if value.startswith("/var/lib/camact:"))
+            self.assertIn("exec", storage.split(":", 1)[1].split(","))
+            self.assertNotIn("noexec", storage.split(":", 1)[1].split(","))
+            self.assertIn("nosuid,nodev", storage)
         with self.assertRaisesRegex(ValueError, "Unsupported"):
             diag.docker_arguments(service, Path("/fixture"), "fixture", "image", "unconfined")
 
@@ -258,13 +292,15 @@ class DiagnosticsTests(unittest.TestCase):
             out = io.StringIO()
             with mock.patch.object(diag, "environment", return_value=observed), \
                     mock.patch.object(diag.os, "getuid", return_value=0), mock.patch.object(diag.os, "getgid", return_value=0), \
+                    mock.patch.object(diag, "mount_state", return_value={"status": "SKIP"}), \
                     mock.patch.object(diag, "namespace_tests", return_value=[diag.row("docker", "user.unshare", "FAIL")]), \
                     mock.patch.object(Path, "mkdir"), \
                     mock.patch.object(diag, "gvisor_tests", return_value=([diag.row("gvisor", "run", "FAIL")], "fixture")), \
                     contextlib.redirect_stdout(out):
                 diag.inside(assets)
         tests = json.loads(out.getvalue())["tests"]
-        self.assertEqual([t["status"] for t in tests], ["FAIL", "FAIL", "FAIL"])
+        self.assertTrue(all(t["status"] == "FAIL" for t in tests))
+        self.assertEqual({t["test"] for t in tests}, {"process_policy", "storage_mount_flags", "user.unshare", "run"})
         self.assertFalse(any("observed_status" in t for t in tests))
 
     def test_audit_only_exports_security_fields_and_marks_missing_evidence(self):
@@ -319,13 +355,13 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "INCOMPLETE")
 
     def test_nested_success_requires_every_namespace_and_cleanup_check(self):
-        docker = ("effective_policy", "started_policy", "collector", "process_policy", "apparmor_parity", "container_cleanup",
+        docker = ("effective_policy", "started_policy", "collector", "process_policy", "storage_mount_flags", "apparmor_parity", "container_cleanup",
                   "user.unshare", "user.setgroups", "user.uid_map", "user.gid_map",
                   "user_mount.unshare", "user_mount.setgroups", "user_mount.uid_map", "user_mount.gid_map", "user_mount.exec_true",
                   "mount.unshare", "mount.setgroups", "mount.uid_map", "mount.gid_map", "mount.private", "mount.tmpfs",
                   "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount", "mount.outside_denied",
                   "net.unshare", "net.setgroups", "net.uid_map", "net.gid_map", "net.unshare_net", "original_unshare")
-        runtime = ("version", "run", "delete", "state_absent", "child_reaping", "directory_cleanup")
+        runtime = ("version", "rootfs_mount_flags", "run", "delete", "state_absent", "child_reaping", "directory_cleanup")
         report = {"tests": [diag.row("docker", name, "PASS") for name in docker]
                   + [diag.row("gvisor", name, "PASS") for name in runtime]}
         diag.summarize(report)
