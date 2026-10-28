@@ -15,6 +15,15 @@ SPEC.loader.exec_module(probe)
 
 
 class ProductionPlanProbeTests(unittest.TestCase):
+    def test_synthetic_diagnostics_preserve_image_scan_gate(self):
+        spec = importlib.util.spec_from_file_location("diagnostic_source_image_scan", ROOT / "scripts/scan-image.py")
+        scanner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(scanner)
+        issues = []
+        for source in (ROOT / "scripts/diagnostic").glob("*.py"):
+            scanner.scan_text(source.read_text(), source.name, issues)
+        self.assertEqual(issues, [], "Synthetic diagnostic source must satisfy the unchanged image scanner")
+
     def report(self):
         return {"tests": [], "logs": {}}
 

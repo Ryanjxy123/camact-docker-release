@@ -23,8 +23,8 @@ DATA = Path("/var/lib/camact")
 SCRATCH = DATA / "scratch"
 STATE = SCRATCH / "gvisor"
 MEMORY = "/synthetic/users/fixture-user/base_memory"
-SECRET_PATH = Path("/run/secrets/production-plan-fixture")
-SECRET_CONTENT = "camact-production-plan-synthetic-secret-only\n"
+CANARY_PATH = Path("/run/secrets/production-plan-fixture")
+CANARY_CONTENT = "camact-production-plan-synthetic-secret-only\n"
 APPARMOR = "camact-gvisor-diagnostic-v1 (enforce)"
 MAX_CAPTURE = 2 * 1024 * 1024
 CANARY_NAMES = ("AGENT_API_KEY", "AGENT_API_KEY_CODEX", "JUDGE_API_KEY", "SIMULATOR_API_KEY", "HF_TOKEN")
@@ -226,7 +226,7 @@ def run(output, *, check_runtimes=False):
         if not policy_ok:
             return report
         stage = "secret_fixture"
-        secret_ok = SECRET_PATH.is_file() and not SECRET_PATH.is_symlink() and SECRET_PATH.read_text() == SECRET_CONTENT
+        secret_ok = CANARY_PATH.is_file() and not CANARY_PATH.is_symlink() and CANARY_PATH.read_text() == CANARY_CONTENT
         add(report, "secret_fixture", secret_ok, synthetic_only=True)
         if not secret_ok:
             return report
@@ -275,7 +275,7 @@ def run(output, *, check_runtimes=False):
         worker = threading.Thread(target=serve, daemon=True)
         worker.start()
         (workspace / "guest-probe.py").write_text(GUEST)
-        (workspace / "guest-config.json").write_text(json.dumps(dict(memory=MEMORY, secret=str(SECRET_PATH),
+        (workspace / "guest-config.json").write_text(json.dumps(dict(memory=MEMORY, secret=str(CANARY_PATH),
             other_user=str(other), forbidden_socket=str(forbidden), credential_names=list(CANARY_NAMES))))
         canaries = {name: "synthetic-production-plan-canary-" + name.lower() for name in CANARY_NAMES}
         node = ROOT / ".tools/node/bin/node"
