@@ -25,6 +25,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = Path(__file__).resolve()
 PROBES = ("user", "user_mount", "mount", "net")
+APPARMOR_PROFILES = ("docker-default", "camact-gvisor-diagnostic-v1")
 CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWNET = 0x10000000, 0x20000, 0x40000000
 MS_RDONLY, MS_NOSUID, MS_NODEV = 1, 2, 4
 MS_REMOUNT, MS_BIND, MS_REC, MS_PRIVATE = 32, 4096, 16384, 1 << 18
@@ -338,9 +339,6 @@ def inside(assets):
         tests += gvisor
     except Exception as exc:
         tests.append(row("gvisor", stage, "FAIL", error=exc, stderr=str(exc), detail=type(exc).__name__))
-    if not matches:
-        for item in tests[1:]:
-            item.update(observed_status=item["status"], status="SKIP", detail="Process policy mismatch; observations are not comparable")
     print(json.dumps(clean({"environment": observed, "tests": tests, "runsc_debug": debug})))
 
 
@@ -392,10 +390,13 @@ def compose_policy(work):
                         detail="Read actual Compose security fields with credential fields reset; fail closed on policy drift")
 
 
-def docker_arguments(service, assets, name, image):
+def docker_arguments(service, assets, name, image, apparmor_profile="docker-default"):
+    if apparmor_profile not in APPARMOR_PROFILES:
+        raise ValueError("Unsupported diagnostic AppArmor profile")
     args = ["docker", "create", "--name", name, "--platform", service["platform"],
             "--user", service["user"], "--cap-drop=ALL", "--read-only", "--pids-limit", str(service["pids_limit"]),
-            "--security-opt=no-new-privileges:true", "--security-opt=seccomp=" + str(ROOT / "deploy/seccomp-gvisor.json")]
+            "--security-opt=no-new-privileges:true", "--security-opt=seccomp=" + str(ROOT / "deploy/seccomp-gvisor.json"),
+            "--security-opt=apparmor=" + apparmor_profile]
     for mount in service["tmpfs"]:
         args += ["--tmpfs", mount]
     args += ["--tmpfs", "/var/lib/camact:rw,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=0700",
@@ -405,29 +406,42 @@ def docker_arguments(service, assets, name, image):
     return args
 
 
-def inspect_policy(name):
+def inspect_policy(name, apparmor_profile="docker-default", *, started=False):
+    if apparmor_profile not in APPARMOR_PROFILES:
+        raise ValueError("Unsupported diagnostic AppArmor profile")
+    test = "started_policy" if started else "effective_policy"
     fields = {"user": ".Config.User", "cap_drop": ".HostConfig.CapDrop", "cap_add": ".HostConfig.CapAdd",
               "read_only": ".HostConfig.ReadonlyRootfs", "privileged": ".HostConfig.Privileged",
               "pids_limit": ".HostConfig.PidsLimit", "apparmor": ".AppArmorProfile", "security_opt": ".HostConfig.SecurityOpt"}
     template = "{" + ",".join('"' + key + '":{{json ' + value + "}}" for key, value in fields.items()) + "}"
     result = command(["docker", "inspect", "--format", template, name])
     if result["returncode"]:
-        return command_row("docker", "effective_policy", result), {}
+        return command_row("docker", test, result), {}
     actual = json.loads(result["stdout"])
     security = actual.pop("security_opt") or []
     profile = next((v.partition("=")[2] for v in security if v.startswith("seccomp=")), "")
     actual["seccomp_matches_repository"] = bool(profile) and json.loads(profile) == json.loads((ROOT / "deploy/seccomp-gvisor.json").read_text())
     actual["no_new_privileges"] = any(v in ("no-new-privileges", "no-new-privileges:true") for v in security)
+    requested = [v.partition("=")[2] for v in security if v.startswith("apparmor=")]
+    actual["expected_apparmor"] = apparmor_profile
+    # Docker may not populate AppArmorProfile until the container is started.
+    actual["apparmor_matches_expected"] = (
+        actual.get("apparmor") == apparmor_profile if started
+        else actual.get("apparmor") in ("", apparmor_profile))
+    actual["apparmor_request_matches"] = not requested or requested == [apparmor_profile]
     matches = (actual["user"] == "10001:10001" and actual["cap_drop"] == ["ALL"] and not actual["cap_add"]
                and actual["read_only"] and not actual["privileged"] and actual["pids_limit"] == 4096
-               and actual["seccomp_matches_repository"] and actual["no_new_privileges"])
-    return row("docker", "effective_policy", "PASS" if matches else "FAIL"), actual
+               and actual["seccomp_matches_repository"] and actual["no_new_privileges"]
+               and actual["apparmor_matches_expected"] and actual["apparmor_request_matches"])
+    return row("docker", test, "PASS" if matches else "FAIL",
+               detail="Started container policy" if started else "Create policy; AppArmor activation checked after start"), actual
 
 
 def audit_records(since):
-    """Only parsed security fields, never raw kernel/journal lines or paths."""
-    tests, events = [], []
-    allowed = {"apparmor", "operation", "profile", "comm", "requested_mask", "denied_mask", "error", "syscall", "arch", "code", "pid"}
+    """Export security fields and sanitized fixture paths, never raw journal lines."""
+    tests, events, seen = [], [], {}
+    allowed = {"apparmor", "operation", "profile", "comm", "requested_mask", "denied_mask", "error", "syscall", "arch", "code", "pid",
+               "class", "flags", "info", "fstype", "capname", "capability", "name", "srcname", "target", "fsuid", "ouid"}
     for name, argv in (("journal", ["sudo", "-n", "journalctl", "--kernel", "--since", since, "--no-pager", "--output=cat"]),
                        ("dmesg", ["sudo", "-n", "dmesg", "--since", since])):
         result = command(argv, 10)
@@ -443,10 +457,26 @@ def audit_records(since):
                 continue
             fields = {key: quoted or bare for key, quoted, bare in re.findall(r'(\w+)=(?:"([^"\n]*)"|(\S+))', line) if key in allowed}
             if fields:
+                for key in ("name", "srcname", "target"):
+                    value = fields.get(key, "")
+                    if "/" in value and not (value in ("/", "/proc/fs", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64", "/bin", "/sbin", "/lib", "/lib64")
+                            or re.fullmatch(r"/proc/(?:self|[0-9]+)/fd/[0-9]+/?", value)
+                            or value.startswith(("/proc/fs/", "/var/lib/camact/scratch/gvisor/", "/tmp/camact-", "/diagnostic/"))):
+                        fields[key] = "<path>"
                 timestamp = re.search(r"audit\(([0-9.]+:[0-9]+)\)", line)
                 if timestamp:
                     fields["audit_id"] = timestamp[1]
-                events.append({"source": name, **fields})
+                fields = clean(fields)
+                identity = json.dumps(fields, sort_keys=True)
+                if identity in seen:
+                    event = seen[identity]
+                    event.setdefault("sources", [event["source"]])
+                    if name not in event["sources"]:
+                        event["sources"].append(name)
+                else:
+                    event = {"source": name, **fields}
+                    seen[identity] = event
+                    events.append(event)
                 count += 1
         tests.append(row("audit", name, "PASS" if count else "SKIP",
                          detail=f"{count} security records; correlate comm/pid/time, records may include other runner activity" if count
@@ -457,12 +487,27 @@ def audit_records(since):
 def summarize(report):
     tests = report["tests"]
     required = [t for t in tests if t["layer"] != "audit" and t["test"] != "production_equivalence"]
+    nested_required = {("docker", name) for name in
+        ("effective_policy", "started_policy", "collector", "process_policy", "apparmor_parity", "container_cleanup", "original_unshare")}
+    for probe_name in PROBES:
+        nested_required.update(("docker", probe_name + "." + name) for name in ("unshare", "setgroups", "uid_map", "gid_map"))
+    nested_required.update(("docker", name) for name in ("user_mount.exec_true", "net.unshare_net", "mount.private", "mount.tmpfs",
+        "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount"))
+    nested_required.update(("gvisor", name) for name in ("version", "run", "delete", "state_absent", "child_reaping", "directory_cleanup"))
+    nested = [t for t in required if t["layer"] in ("docker", "gvisor")]
+    passed = {(t["layer"], t["test"]) for t in nested if t["status"] == "PASS"}
+    missing = nested_required - passed
+    report["nested_missing_checks"] = sorted(layer + "." + test for layer, test in missing)
+    report["nested_outcome"] = "FAIL" if any(t["status"] == "FAIL" for t in nested) else (
+        "INCOMPLETE" if missing or any(t["status"] == "SKIP" for t in nested) else "PASS")
     outcome = "FAIL" if any(t["status"] == "FAIL" for t in required) else (
-        "INCOMPLETE" if not required or any(t["status"] == "SKIP" for t in required) else "PASS")
+        "INCOMPLETE" if report["nested_outcome"] != "PASS" or not required or any(t["status"] == "SKIP" for t in required) else "PASS")
     report["outcome"] = outcome
-    lines = [f"# gVisor environment diagnostics: {outcome}", "",
+    lines = [f"# gVisor environment diagnostics: {outcome}", "", f"Nested container outcome: {report['nested_outcome']}", "",
              "Diagnostic only: a lightweight base image and tmpfs data fixture do not prove full CamAct acceptance.", "",
              "| Layer | Test / failure stage | Result | errno |", "| --- | --- | --- | --- |"]
+    if report.get("apparmor_scope") == "diagnostic_candidate_only":
+        lines[4:4] = ["AppArmor candidate profile: nested results apply only to this diagnostic policy; production equivalence is unverified.", ""]
     for item in tests:
         lines.append(f"| {item['layer']} | {item['stage']} | {item['status']} | {item['errno_name'] or '—'} |")
     lines += ["", "Interpretation:",
@@ -475,10 +520,14 @@ def summarize(report):
     return "\n".join(lines)
 
 
-def diagnose(output):
+def diagnose(output, apparmor_profile="docker-default"):
+    if apparmor_profile not in APPARMOR_PROFILES:
+        raise ValueError("Unsupported diagnostic AppArmor profile")
     output.mkdir(parents=True, exist_ok=True)
     report = {"schema": "camact.gvisor.diagnostics.v1", "tests": [], "environments": {},
-              "runsc_debug": "", "audit_events": [], "scope": "diagnostic_only"}
+              "runsc_debug": "", "audit_events": [], "scope": "diagnostic_only",
+              "expected_apparmor": apparmor_profile,
+              "apparmor_scope": "production_default" if apparmor_profile == "docker-default" else "diagnostic_candidate_only"}
     tests = report["tests"]
     since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
     name = "camact-gvisor-diag-" + uuid.uuid4().hex[:12]
@@ -545,18 +594,19 @@ def diagnose(output):
         stage = "gvisor.locked_download"
         download_gvisor(assets, entry)
         tests.append(row("gvisor", "locked_download", "PASS", detail="Official archive SHA512 verified; all sidecars retained"))
-        (assets / "metadata.json").write_text(json.dumps({"version": entry["version"], "flags": flags}))
+        (assets / "metadata.json").write_text(json.dumps({"version": entry["version"], "flags": flags,
+                                                       "expected_apparmor": apparmor_profile}))
         (assets / "metadata.json").chmod(0o444)
         report["runtime"] = {"version": entry["version"], "sha512": entry["sha512"], "flags": flags,
-                             "base_image": image, "image_id": image_id}
+                             "base_image": image, "image_id": image_id, "expected_apparmor": apparmor_profile}
         stage = "docker.create"
         created = True  # A timed-out create may have created the container.
-        result = command(docker_arguments(service, assets, name, image_id))
+        result = command(docker_arguments(service, assets, name, image_id, apparmor_profile))
         tests.append(command_row("docker", "create", result))
         if result["returncode"]:
             return 1
         stage = "docker.effective_policy"
-        item, actual = inspect_policy(name)
+        item, actual = inspect_policy(name, apparmor_profile)
         tests.append(item)
         report["effective_docker_policy"] = actual
         if item["status"] != "PASS":
@@ -570,15 +620,16 @@ def diagnose(output):
         report["environments"]["docker"] = nested["environment"]
         report["runsc_debug"] = nested["runsc_debug"]
         tests += nested["tests"]
+        stage = "docker.started_policy"
+        item, started_actual = inspect_policy(name, apparmor_profile, started=True)
+        tests.append(item)
+        report["started_docker_policy"] = started_actual
         stage = "docker.apparmor_parity"
         current = nested["environment"]["apparmor_current"]
-        if actual.get("apparmor") != "docker-default" or not current.get("value", "").startswith("docker-default"):
-            tests.append(row("docker", "apparmor_parity", "SKIP", detail="Run #5 was AppArmor confined; Docker default confinement not verified here"))
-            for item in tests:
-                if item["layer"] in ("docker", "gvisor") and item["test"] not in ("production_equivalence", "apparmor_parity"):
-                    item.update(observed_status=item["status"], status="SKIP", detail="AppArmor condition differs from Run #5; see observed_status")
-        else:
-            tests.append(row("docker", "apparmor_parity", "PASS", detail=current["value"]))
+        matches = (started_actual.get("apparmor") == apparmor_profile and current.get("status") == "PASS"
+                   and current.get("value", "").strip() == apparmor_profile + " (enforce)")
+        tests.append(row("docker", "apparmor_parity", "PASS" if matches else "FAIL",
+                         detail="Expected " + apparmor_profile + " (enforce); observed " + current.get("value", "unavailable")))
     except Exception as exc:
         tests.append(row("diagnostic", stage, "FAIL", error=exc,
                          detail=type(exc).__name__, stderr=str(exc)))
@@ -609,6 +660,7 @@ def main():
     parser.add_argument("--work", type=Path)
     parser.add_argument("--layer", choices=("host", "docker"), default="host")
     parser.add_argument("--inside", type=Path)
+    parser.add_argument("--apparmor-profile", choices=APPARMOR_PROFILES, default="docker-default")
     args = parser.parse_args()
     os.umask(0o077)
     if args.probe:
@@ -618,7 +670,7 @@ def main():
         return 0
     if not args.output:
         parser.error("--output is required")
-    return diagnose(args.output)
+    return diagnose(args.output, args.apparmor_profile)
 
 
 if __name__ == "__main__":

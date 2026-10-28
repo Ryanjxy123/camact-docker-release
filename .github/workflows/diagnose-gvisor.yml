@@ -10,21 +10,43 @@ jobs:
   diagnose:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        apparmor: [docker-default, camact-gvisor-diagnostic-v1]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
       - name: Scan tracked release source before diagnostics
         run: python3 scripts/scan-release.py --tracked
+      - name: Run diagnostic regression contracts
+        run: python3 -B -m unittest discover -s tests -p test_gvisor_diagnostics.py -v
+      - name: Load bounded experimental AppArmor policy on this disposable runner
+        if: matrix.apparmor == 'camact-gvisor-diagnostic-v1'
+        run: |
+          sudo apparmor_parser --replace scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
+          sudo aa-status
+      - name: Select unique diagnostic archive
+        env:
+          PROFILE: ${{ matrix.apparmor }}
+        run: |
+          day=$(TZ=Asia/Shanghai date +%F)
+          echo "DIAGNOSTIC_ARCHIVE=$GITHUB_WORKSPACE/harness/_log/$day/camact-gvisor-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$PROFILE" >> "$GITHUB_ENV"
       - name: Diagnose host, Docker policy, and nested runsc
-        run: python3 -B scripts/diagnose-gvisor.py --output "$RUNNER_TEMP/camact-gvisor-diagnostics"
+        env:
+          PROFILE: ${{ matrix.apparmor }}
+        run: python3 -B scripts/diagnose-gvisor.py --apparmor-profile "$PROFILE" --output "$DIAGNOSTIC_ARCHIVE"
       - name: Retain sanitized diagnostic report
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gvisor-environment-diagnostics
+          name: gvisor-environment-diagnostics-${{ matrix.apparmor }}
           path: |
-            ${{ runner.temp }}/camact-gvisor-diagnostics/report.json
-            ${{ runner.temp }}/camact-gvisor-diagnostics/summary.md
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/report.json
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/summary.md
           if-no-files-found: error
           retention-days: 14
+      - name: Unload experimental profile after container cleanup
+        if: always() && matrix.apparmor == 'camact-gvisor-diagnostic-v1'
+        run: sudo apparmor_parser --remove scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
