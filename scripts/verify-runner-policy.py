@@ -18,6 +18,8 @@ PROFILE = "camact-gvisor-v1"
 READY = "/run/camact/runner-policy.json"
 RELEASE = "/run/camact/runner-policy.release"
 LIMIT = 2 * 1024 * 1024
+OPERATIONS = frozenset({"compose_create", "compose_ps", "created_inspect", "container_start",
+    "inside_evidence_copy", "started_inspect", "release_copy", "container_wait", "container_remove", "compose_down"})
 TMPFS = {"/run/camact": (256 * 1024**2, "0700"),
          "/run/camact/openclaw": (256 * 1024**2, "0700"), "/tmp": (512 * 1024**2, "1777")}
 
@@ -129,6 +131,17 @@ def expected_mounts(config, *, allow_cache=False):
     return mounts
 
 
+def runner_configuration(config):
+    """Create a single-service stage without starting any Compose dependency."""
+    runner = config["services"]["runner"]
+    if (any(runner.get(key) for key in ("depends_on", "links", "volumes_from"))
+            or any(isinstance(runner.get(key), str) and runner[key].startswith("service:")
+                   for key in ("network_mode", "ipc", "pid", "uts", "cgroup"))):
+        raise ValueError("runner_service_dependency_forbidden")
+    config["services"] = {"runner": runner}
+    return runner
+
+
 def inspect_errors(actual, config, image, policy, *, started, allow_cache=False):
     expected = expected_mounts(config, allow_cache=allow_cache)
     host = actual.get("HostConfig") or {}
@@ -192,10 +205,16 @@ def run(args, command):
     public = output / "runner-policy"
     private.mkdir(parents=True, exist_ok=True)
     public.mkdir(parents=True, exist_ok=True)
-    config = json.loads(Path(args.compose_config).read_text())
-    expected_mounts(config, allow_cache=stage == "full-benchmark-cache-offline-reuse")
-    policy = json.loads((ROOT / "deploy/seccomp-gvisor.json").read_text())
-    runner = config["services"]["runner"]
+    report = {"schema": "camact.runner-policy.v1", "stage": stage, "result": "FAIL", "checks": [], "logs": [], "operations": []}
+    try:
+        config = json.loads(Path(args.compose_config).read_text())
+        expected_mounts(config, allow_cache=stage == "full-benchmark-cache-offline-reuse")
+        policy = json.loads((ROOT / "deploy/seccomp-gvisor.json").read_text())
+        runner = runner_configuration(config)
+    except (OSError, ValueError, KeyError, TypeError):
+        report.update(failure="runner_configuration_rejected", cleanup_returncode=0)
+        write_json(public / (stage + ".json"), report)
+        return 125
     runner.setdefault("labels", {})["com.camact.verification"] = args.project
     runner["entrypoint"] = ["python", "-B", "/opt/camact/scripts/verify-runner-policy.py", "inside", "--"]
     runner["command"] = command
@@ -203,15 +222,44 @@ def run(args, command):
     write_json(path, config)
     compose = ["docker", "compose", "--env-file", "/dev/null", "--project-directory", str(ROOT),
                "--project-name", args.project + "-" + stage, "-f", str(path)]
-    report = {"schema": "camact.runner-policy.v1", "stage": stage, "result": "FAIL", "checks": [], "logs": []}
     container, result, cleanup = None, 125, None
-    def call(argv, *, check=True, timeout=60):
-        value = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    diagnostic_bytes = 0
+    def failed_operation(operation, *, returncode=None, stderr="", timed_out=False, unavailable=False):
+        nonlocal diagnostic_bytes
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode(errors="replace")
+        # No argv, environment, inspect stdout or model configuration is public.
+        encoded = sanitized(stderr or "").encode("utf-8")
+        remaining = max(0, LIMIT - diagnostic_bytes)
+        bounded = encoded[:remaining].decode("utf-8", errors="ignore")
+        diagnostic_bytes += len(bounded.encode("utf-8"))
+        entry = {"operation": operation, "status": "FAIL", "returncode": returncode,
+                 "timeout": timed_out, "stderr": bounded, "truncated": len(encoded) > remaining}
+        if unavailable:
+            entry["failure"] = "command_unavailable"
+        # Readiness polling may fail repeatedly; retain the latest bounded record.
+        if operation == "inside_evidence_copy":
+            report["operations"][:] = [item for item in report["operations"] if item["operation"] != operation]
+        report["operations"].append(entry)
+    def call(operation, argv, *, check=True, timeout=60):
+        if operation not in OPERATIONS:
+            raise ValueError("unknown_docker_operation")
+        try:
+            value = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as error:
+            failed_operation(operation, stderr=error.stderr, timed_out=True)
+            raise
+        except OSError:
+            failed_operation(operation, unavailable=True)
+            raise
+        if value.returncode:
+            failed_operation(operation, returncode=value.returncode, stderr=value.stderr)
         if check and value.returncode:
             raise RuntimeError("docker_command_failed")
         return value
     def inspect(started):
-        actual = json.loads(call(["docker", "inspect", "--format", "{{json .}}", container]).stdout)
+        actual = json.loads(call("started_inspect" if started else "created_inspect",
+                                 ["docker", "inspect", "--format", "{{json .}}", container]).stdout)
         errors = inspect_errors(actual, config, args.image, policy, started=started,
                                 allow_cache=stage == "full-benchmark-cache-offline-reuse")
         report["checks"].append({"test": "started_hostconfig" if started else "created_hostconfig", "errors": errors,
@@ -219,16 +267,16 @@ def run(args, command):
         if errors:
             raise RuntimeError("runner_host_policy_failed")
     try:
-        call(compose + ["create", "--no-build", "--no-deps", "runner"], timeout=120)
-        container = call(compose + ["ps", "--all", "--quiet", "runner"]).stdout.strip()
+        call("compose_create", compose + ["create", "--no-build", "--pull", "never", "runner"], timeout=120)
+        container = call("compose_ps", compose + ["ps", "--all", "--quiet", "runner"]).stdout.strip()
         if not re.fullmatch(r"[0-9a-f]{12,64}", container):
             raise RuntimeError("runner_identity_missing")
         inspect(False)
-        call(["docker", "start", container])
+        call("container_start", ["docker", "start", container])
         ready_path = private / (stage + "-ready.json")
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            copied = call(["docker", "cp", container + ":" + READY, str(ready_path)], check=False)
+            copied = call("inside_evidence_copy", ["docker", "cp", container + ":" + READY, str(ready_path)], check=False)
             if copied.returncode == 0:
                 break
             time.sleep(.1)
@@ -245,8 +293,8 @@ def run(args, command):
         release = private / (stage + "-release")
         release.write_text("verified\n")
         release.chmod(0o644)
-        call(["docker", "cp", str(release), container + ":" + RELEASE])
-        wait = call(["docker", "wait", container], timeout=args.timeout)
+        call("release_copy", ["docker", "cp", str(release), container + ":" + RELEASE])
+        wait = call("container_wait", ["docker", "wait", container], timeout=args.timeout)
         result = int(wait.stdout.strip())
         report["command_exit_code"] = result
         report["result"] = "PASS" if result == 0 else "FAIL"
@@ -272,12 +320,12 @@ def run(args, command):
                 report["failure"] = "log_collection_failed"
             finally:
                 try:
-                    cleanup = call(["docker", "rm", "--force", container], check=False).returncode
+                    cleanup = call("container_remove", ["docker", "rm", "--force", container], check=False).returncode
                 except (OSError, subprocess.SubprocessError):
                     cleanup = 125
         else:
             try:
-                cleanup = call(compose + ["down", "--remove-orphans"], check=False).returncode
+                cleanup = call("compose_down", compose + ["down", "--remove-orphans"], check=False).returncode
             except (OSError, subprocess.SubprocessError):
                 cleanup = 125
         report["cleanup_returncode"] = cleanup

@@ -14,6 +14,7 @@ from test_image_security import SYNTHETIC_KEY, image_archive, tar_payload
 ROOT = Path(__file__).resolve().parents[1]
 IMAGE_ID = "sha256:" + "1" * 64
 CALLER_CANARY = "caller-private-configuration-canary"
+HF_CANARY = "hf_" + "0" * 40
 
 
 class DockerVerificationDiagnostics(unittest.TestCase):
@@ -186,7 +187,16 @@ elif args[:1] == ["compose"]:
         outcome("compose-project-cleanup")
     elif "create" in args:
         import hashlib
+        if "--no-deps" in args:
+            print("unknown flag: --no-deps", file=sys.stderr)
+            raise SystemExit(16)
+        assert args[args.index("create"):] == ["create", "--no-build", "--pull", "never", "runner"]
         config=json.loads(compose_path.read_text())
+        assert set(config["services"]) == {"runner"}
+        if "runner-policy-create" in failures:
+            print("compose create fixture failure: " + os.environ["CALLER_CANARY"] + " hf_" + "0" * 40,
+                  file=sys.stderr)
+            raise SystemExit(failures["runner-policy-create"])
         identity=hashlib.sha256(str(compose_path).encode()).hexdigest()
         containers[identity]={"config":config,"stage":compose_path.stem.removesuffix("-compose")}
         if containers[identity]["stage"] == "offline-tests-in-compose":
@@ -274,6 +284,10 @@ else:
             config_path = evidence / "private/compose.json"
             config = json.loads(config_path.read_text()) if config_path.exists() else None
             public = "".join(path.read_text() for path in evidence.rglob("*") if path.is_file() and "private" not in path.relative_to(evidence).parts)
+            process.runner_policy_reports = {path.stem: json.loads(path.read_text())
+                                             for path in (evidence / "runner-policy").glob("*.json")}
+            containers_path = project / "containers.json"
+            process.remaining_containers = json.loads(containers_path.read_text()) if containers_path.exists() else {}
             self.assertFalse((project / ".validation").exists())
         return process, summary, scan, calls, config, public
 
@@ -300,6 +314,35 @@ else:
         self.assertEqual(process.image_output, "")
         self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
         self.assertNotIn(CALLER_CANARY, process.stdout + process.stderr + public)
+
+    def test_runner_create_failure_preserves_cli_status_redacts_and_keeps_gate_closed(self):
+        process, summary, scan, calls, _, public = self.run_gate(failures={"runner-policy-create": 23})
+        self.assertEqual(scan["result"], "PASS")
+        self.assertEqual(process.returncode, 125, process.stderr)
+        self.assertEqual(summary["stage"], "synthetic-benchmark-cache-creation")
+        self.assertEqual(summary["result"], "FAIL")
+        self.assertEqual(process.image_output, "")
+        self.assertTrue(process.runner_policy_reports)
+        for report in process.runner_policy_reports.values():
+            self.assertEqual(report["result"], "FAIL")
+            self.assertEqual(report["checks"], [])
+            self.assertEqual(report["cleanup_returncode"], 0)
+            self.assertNotIn("command_exit_code", report)
+            operations = report["operations"]
+            self.assertEqual(len(operations), 1)
+            self.assertEqual(operations[0]["operation"], "compose_create")
+            self.assertEqual(operations[0]["returncode"], 23)
+            self.assertEqual(operations[0]["status"], "FAIL")
+            self.assertIn("compose create fixture failure:", operations[0]["stderr"])
+            self.assertFalse(operations[0]["truncated"])
+        self.assertTrue(any("create" in call for call in calls))
+        self.assertTrue(any("down" in call for call in calls))
+        self.assertFalse(any(call[0] in {"inspect", "start", "cp", "wait", "logs", "rm", "synthetic-command"}
+                             for call in calls))
+        self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
+        self.assertEqual(process.remaining_containers, {})
+        self.assertNotIn(CALLER_CANARY, process.stdout + process.stderr + public)
+        self.assertNotIn(HF_CANARY, process.stdout + process.stderr + public)
 
     def test_independent_failures_and_all_native_cases_are_collected(self):
         failures = {"native-image-codecs": 31, "native-loop-claude-single_turn": 41,
