@@ -31,13 +31,40 @@ tests/ / docs/                   可复现的离线测试与交接说明
 
 ## 新服务器条件
 
-Linux x86_64；建议独立 Ubuntu 22.04/24.04 主机、独立部署账号、宿主 Python 3（`camactctl` 仅用标准库）、Docker Engine、Compose v2、可用的 user/PID/mount namespace 和 ptrace/Systrap。镜像目前只锁定 `linux/amd64`，评测 Python 3.13.11 在镜像内。至少预留 4 GiB 可用内存和 15 GiB 空间，较高并发及正式结果应另行扩容；下载数据约 2.35 GB，结果容量取决于运行规模。启用 cgroup、允许 Docker 的 proc 挂载；受限的 Kubernetes/共享容器可能不满足条件。
+Linux x86_64；建议独立 Ubuntu 24.04 主机、独立部署账号、宿主 Python 3（`camactctl` 仅用标准库）、Docker Engine、Compose v2、已启用的 AppArmor 与支持 ABI4/userns 的 AppArmor 4 以上 parser，以及可用的 user/PID/mount namespace 和 ptrace/Systrap。其他 Ubuntu/Debian 主机须满足相同条件；AppArmor 3 的语法检查不构成生产兼容证明。镜像目前只锁定 `linux/amd64`，评测 Python 3.13.11 在镜像内。至少预留 4 GiB 可用内存和 15 GiB 空间，较高并发及正式结果应另行扩容；下载数据约 2.35 GB，结果容量取决于运行规模。启用 cgroup、允许 Docker 的 proc 挂载；受限的 Kubernetes/共享容器可能不满足条件。
 
-新主机可执行 `sudo bash scripts/install-host.sh` 安装已实际下载、校验和检查版本的 Docker 28.5.1、Compose 2.40.3、Buildx 0.29.1；脚本要求 Ubuntu/Debian systemd，拒绝覆盖已有 Docker，并创建 Docker 管理组。管理员需为独立部署账号授予访问权，例如在创建 `camact-deploy` 账号后执行 `sudo usermod -aG docker camact-deploy`，再重新登录该账号。已有 Docker 的服务器先运行 `docker version`、`docker compose version`、`docker buildx version`、`docker run --rm hello-world`。安装脚本本身未在本轮正式服务器执行，也不会由 `camactctl` 隐式修改宿主服务。
+新主机可执行 `sudo bash scripts/install-host.sh` 安装 AppArmor 软件包、加载固定 Runner 策略，再安装已锁定并校验的 Docker 28.5.1、Compose 2.40.3、Buildx 0.29.1；脚本要求 Ubuntu/Debian systemd，拒绝覆盖已有 Docker，并创建 Docker 管理组。ABI4/profile 加载失败时立即停止。管理员需为独立部署账号授予访问权，例如在创建 `camact-deploy` 账号后执行 `sudo usermod -aG docker camact-deploy`，再重新登录该账号。已有 Docker 的服务器检查三个版本后，独立运行下方策略安装命令；无需重装 Docker。`camactctl` 不会隐式修改宿主服务或策略。
 
 本方案将 runsc 和官方 CLI 一起安装在 Runner 镜像内，由可信 Runner 创建每任务 rootless gVisor；不需要将当前宿主 `.tools` 复制入库，也不需要 Docker 的 `--runtime=runsc` 注册。保留原每任务 OCI 隔离、`network=none`、只读包与当前 Task 工作区、UDS Relay。没有 Docker-in-Docker、privileged 或 Agent Docker socket。选择该方式是为了保留原路径、Relay 和 OpenClaw tmpfs 协议；Docker 内可行性仍须通过下文门禁；在权限完整的独立主机执行 `bash scripts/verify-docker.sh` 可重跑构建、15 个原生合成用例及容器重建持久化检查。
 
-容器 capability 全部丢弃，使用 `no-new-privileges` 和仓库 seccomp 规则。Docker 28.5.1 默认 AppArmor profile 含 `deny mount,`；启用它的主机还需管理员提供限定的 Runner 策略并重测，当前仓库尚无已验证可直接加载的替代 profile。安装脚本不能保证默认宿主策略即可启动嵌套 runsc。AppArmor/SELinux 的限制应按限定规则解决；宿主直接通过 runsc 的测试不证明嵌套 Docker 已可用。
+Runner 保留 UID 10001、capability 全部丢弃、`no-new-privileges`、仓库 seccomp、只读根文件系统及原 pids/tmpfs 限制，Compose 显式使用具名 enforce 策略 `camact-gvisor-v1`。管理员在启动前加载仓库的固定策略：
+
+```bash
+# 使用 .env 中 CAMACT_DATA_DIR 对应的宿主绝对目录；目录可尚不存在
+sudo bash scripts/install-gvisor-policy.sh install --data-dir /srv/camact-data
+sudo bash scripts/install-gvisor-policy.sh --check-roots --data-dir /srv/camact-data
+# 仅离线检查源文件与宏，不证明内核已加载或运行时可用
+bash scripts/install-gvisor-policy.sh check --data-dir /srv/camact-data
+```
+
+未传 `--data-dir` 时检查仓库 `.data`。安装器仅向 `/etc/apparmor.d/camact-gvisor-v1` 写入此固定 profile，编译成功才加载，并核对精确名称与 enforce 模式；不修改 `docker-default`、Docker daemon、全局 sysctl 或 LSM 状态。策略保留原 proc/sys 和网络限制，只允许锁定 runsc 的明确 staging、state、任务工作区与只读包挂载。Personal Memory 的挂载源始终是当前 Task 的 album 副本，cache 路径仅作为只读别名目标；用户/任务关联仍由原 builder 的 allowlist 保证。
+
+默认支持 `/var/lib/camact/{results,benchmark,scratch}`、`scratch/gvisor` 及下方固定 Benchmark commit。原 CLI 的自定义根目录与仓库/版本仍可使用，但必须先由管理员显式安装相应策略配置，再以相同参数检查。例如：
+
+```bash
+sudo bash scripts/install-gvisor-policy.sh install --data-dir /srv/camact-data \
+  --results-root /var/lib/camact/results/subdir \
+  --cache-root /var/lib/camact/cache/project/benchmark \
+  --repo-id OWNER/DATASET --revision <40位小写commit>
+sudo bash scripts/install-gvisor-policy.sh --check-roots --data-dir /srv/camact-data \
+  --results-root /var/lib/camact/results/subdir \
+  --cache-root /var/lib/camact/cache/project/benchmark \
+  --repo-id OWNER/DATASET --revision <40位小写commit>
+```
+
+每类最多 8 个去重后的显式值（含保留的默认值）；还可用 `--scratch-root`、`--state-root` 配合相应容器环境变量。根目录必须是 `/var/lib/camact` 下的普通绝对 literal 路径，拒绝 glob、路径回退、Secret/系统目录和映射后的软链接；各根后仍限定固定 release/smoke/preflight 层级。变更参数应重新安装完整所需集合；安装不会自动合并旧的额外权限。遗漏配置时 `--check-roots` 失败，不能据此宣称自定义路径受支持。
+
+Ubuntu 的裸宿主 userns 探针可能受到其自身 AppArmor 上下文限制；其失败应保留为诊断结果，不能改记为通过。正式门禁须在真实 Compose Runner 中核验上述策略、运行生产 builder、5 个 CLI 与 cleanup，并完成原合成验收。profile 成功加载及宿主直接通过 runsc 均不能替代这些检查。
 
 ## 初始化、构建与模型配置
 

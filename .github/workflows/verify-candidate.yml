@@ -16,6 +16,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+      - name: Set an explicit dated verification archive
+        run: |
+          python3 - <<'PY'
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+          import os
+          from pathlib import Path
+          day = datetime.now(ZoneInfo('Asia/Shanghai')).strftime('%Y-%m-%d')
+          path = Path(os.environ['GITHUB_WORKSPACE']) / 'harness/_log' / day / ('camact-docker-v1-actions-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'])
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              out.write('ARCHIVE_ROOT=' + str(path) + '\n')
+          PY
       - name: Scan tracked release source before building
         run: python3 scripts/scan-release.py --tracked
       - name: Validate version and image name
@@ -47,6 +59,9 @@ jobs:
             SOURCE_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: Install the scoped production gVisor policy
+        id: policy
+        run: sudo bash scripts/install-gvisor-policy.sh install --data-dir "$ARCHIVE_ROOT/private/data"
       - name: Require Compose and native gVisor integration before publishing
         id: integration
         env:
@@ -55,6 +70,33 @@ jobs:
           CAMACT_EXPECT_VERSION: ${{ steps.identity.outputs.version }}
           CAMACT_EXPECT_SOURCE_REVISION: ${{ github.sha }}
         run: bash scripts/verify-docker.sh
+      - name: Clean up this verification's remaining containers
+        if: ${{ always() && steps.integration.outcome != 'skipped' }}
+        run: |
+          if [[ -f "$ARCHIVE_ROOT/verification-project.txt" ]]; then
+            project=$(cat "$ARCHIVE_ROOT/verification-project.txt")
+            [[ "$project" =~ ^docker-gates-[a-z0-9-]+$ ]]
+            remaining=$(docker ps -aq --filter "label=com.camact.verification=$project")
+            if [[ -n "$remaining" ]]; then
+              docker rm --force $remaining
+              echo 'Unexpected remaining verification containers were removed; cleanup gate failed.' >&2
+              exit 1
+            fi
+          fi
+      - name: Collect bounded AppArmor failure evidence
+        if: ${{ always() && steps.integration.outcome == 'failure' }}
+        run: |
+          mkdir -p "$ARCHIVE_ROOT"
+          sudo journalctl -k --since '-2 hours' --no-pager | python3 -c 'import sys; lines=(line for line in sys.stdin if "apparmor=" in line and "DENIED" in line and "camact-gvisor-v1" in line); sys.stdout.write("".join(lines)[-2097152:])' | python3 scripts/verify-runner-policy.py sanitize > "$ARCHIVE_ROOT/apparmor-audit.log"
+      - name: Unload the production policy after container cleanup
+        if: ${{ always() && steps.policy.outcome != 'skipped' }}
+        run: |
+          remaining=$(docker ps -aq --filter 'label=com.docker.compose.service=runner')
+          if [[ -n "$remaining" ]]; then
+            echo 'Runner containers remain; retaining the profile and failing cleanup.' >&2
+            exit 1
+          fi
+          sudo apparmor_parser --remove deploy/camact-gvisor-v1.profile
       - name: Retain sanitized integration diagnostics
         if: ${{ always() && steps.integration.outcome != 'skipped' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -63,15 +105,71 @@ jobs:
           # Deliberately exclude raw inspect output, logs, model configuration,
           # credentials, benchmark files and synthetic execution artifacts.
           path: |
-            .validation/docker-gates-*/image-security-scan.json
-            .validation/docker-gates-*/verification-summary.json
-            .validation/docker-gates-*/sandbox-preflight.json
-            .validation/docker-gates-*/host-sandbox-preflight.json
-            .validation/docker-gates-*/offline-tests-network-disabled.json
-            .validation/docker-gates-*/offline-tests-compose.json
+            ${{ env.ARCHIVE_ROOT }}/RUN-README.md
+            ${{ env.ARCHIVE_ROOT }}/manifest.json
+            ${{ env.ARCHIVE_ROOT }}/image-identity.json
+            ${{ env.ARCHIVE_ROOT }}/image-security-scan.json
+            ${{ env.ARCHIVE_ROOT }}/verification-summary.json
+            ${{ env.ARCHIVE_ROOT }}/sandbox-preflight.json
+            ${{ env.ARCHIVE_ROOT }}/host-sandbox-preflight.json
+            ${{ env.ARCHIVE_ROOT }}/offline-tests-network-disabled.json
+            ${{ env.ARCHIVE_ROOT }}/offline-tests-compose.json
+            ${{ env.ARCHIVE_ROOT }}/runner-policy/*.json
+            ${{ env.ARCHIVE_ROOT }}/runner-policy/*.log
+            ${{ env.ARCHIVE_ROOT }}/failure-logs/*.log
+            ${{ env.ARCHIVE_ROOT }}/apparmor-audit.log
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
+      - name: Export the fully verified immutable image without publishing
+        if: ${{ success() && steps.integration.outcome == 'success' && !inputs.publish }}
+        env:
+          CANDIDATE_ID: ${{ steps.integration.outputs.image_id }}
+          VERIFIED_VERSION: ${{ steps.identity.outputs.version }}
+          VERIFIED_SOURCE_REVISION: ${{ github.sha }}
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          from pathlib import Path
+          root = Path(os.environ['ARCHIVE_ROOT'])
+          identity = json.loads((root / 'image-identity.json').read_text())
+          scan = json.loads((root / 'image-security-scan.json').read_text())
+          summary = json.loads((root / 'verification-summary.json').read_text())
+          image = os.environ['CANDIDATE_ID']
+          assert re.fullmatch(r'sha256:[0-9a-f]{64}', image)
+          assert identity == dict(image_id=image, version=os.environ['VERIFIED_VERSION'], source_revision=os.environ['VERIFIED_SOURCE_REVISION'])
+          assert scan['result'] == 'PASS' and scan['issue_count'] == 0 and scan['issues'] == [] and scan['candidate_values_printed'] is False
+          assert summary['result'] == 'PASS' and summary['stages']
+          assert all(s['result'] == 'PASS' or (s.get('diagnostic_only') is True and s['result'] == 'COLLECTED' and s.get('collector_result') == 'PASS') for s in summary['stages'])
+          actual = json.loads(subprocess.check_output(['docker','image','inspect',image]))[0]
+          assert actual['Id'] == image
+          assert actual['Config']['Labels']['org.opencontainers.image.revision'] == identity['source_revision']
+          assert actual['Config']['Labels']['org.opencontainers.image.version'] == identity['version']
+          (root / 'verified-image').mkdir()
+          PY
+          docker save "$CANDIDATE_ID" | zstd --threads=2 -3 -o "$ARCHIVE_ROOT/verified-image/image.tar.zst"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          root = Path(os.environ['ARCHIVE_ROOT'])
+          identity = json.loads((root / 'image-identity.json').read_text())
+          digest = hashlib.sha256()
+          with (root / 'verified-image/image.tar.zst').open('rb') as stream:
+              for chunk in iter(lambda: stream.read(1024*1024), b''):
+                  digest.update(chunk)
+          (root / 'verified-image/image-manifest.json').write_text(json.dumps(dict(schema='camact.verified-image.v1', **identity, image_archive_sha256=digest.hexdigest()), indent=2) + '\n')
+          PY
+      - name: Retain the verified image for isolated nonpublishing validation
+        if: ${{ success() && steps.integration.outcome == 'success' && !inputs.publish }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: camact-verified-image
+          path: |
+            ${{ env.ARCHIVE_ROOT }}/verified-image/image.tar.zst
+            ${{ env.ARCHIVE_ROOT }}/verified-image/image-manifest.json
+          if-no-files-found: error
+          retention-days: 3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: ${{ inputs.publish }}
         with:

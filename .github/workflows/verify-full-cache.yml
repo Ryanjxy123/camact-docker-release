@@ -1,0 +1,108 @@
+name: Validate the complete pinned HF cache
+on:
+  workflow_dispatch:
+    inputs:
+      image_run_id:
+        description: 'Successful publish.yml workflow_dispatch run producing camact-verified-image'
+        type: string
+        required: true
+      expected_source_revision:
+        description: 'Exact 40-character source SHA; must equal this workflow checkout and image run HEAD'
+        type: string
+        required: true
+      version:
+        description: 'Verified immutable candidate version'
+        type: string
+        required: true
+        default: '0.1.0-rc.1'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: full-cache-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  full-cache:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Validate explicit identity and allocate a private archive
+        env:
+          EXPECTED_SOURCE: ${{ inputs.expected_source_revision }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+        run: |
+          python3 - <<'PY'
+          import datetime, os, pathlib, re, subprocess, zoneinfo
+          source = os.environ['EXPECTED_SOURCE']
+          revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          if not re.fullmatch(r'[0-9a-f]{40}', source) or source != revision or source != os.environ['GITHUB_SHA']:
+              raise SystemExit('Expected source must equal the current workflow checkout')
+          if not re.fullmatch(r'[1-9][0-9]{0,19}', os.environ['IMAGE_RUN_ID']):
+              raise SystemExit('A numeric successful image run ID is required')
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9_.-]+)?', os.environ['REQUESTED_VERSION']):
+              raise SystemExit('An explicit candidate version is required')
+          day = datetime.datetime.now(zoneinfo.ZoneInfo('Asia/Shanghai')).date().isoformat()
+          name = 'camact-full-cache-v1-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          archive = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'harness' / '_log' / day / name
+          archive.mkdir(parents=True, exist_ok=False)
+          archive.chmod(0o700)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('FULL_CACHE_ARCHIVE=' + str(archive) + '\n')
+              output.write('FULL_CACHE_VALIDATION_RUN=' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '\n')
+          PY
+      - name: Scan release source before accepting an image
+        run: python3 scripts/scan-release.py --tracked
+      - name: Load the bounded production AppArmor policy
+        id: policy
+        run: sudo -n bash scripts/install-gvisor-policy.sh install --data-dir "$FULL_CACHE_ARCHIVE/private/data"
+      - name: Verify the image, download the full pinned dataset, then recreate offline containers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          EXPECTED_SOURCE: ${{ inputs.expected_source_revision }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 -B scripts/verify-full-cache.py run \
+            --output "$FULL_CACHE_ARCHIVE" \
+            --repository "$GITHUB_REPOSITORY" \
+            --image-run-id "$IMAGE_RUN_ID" \
+            --expected-source-revision "$EXPECTED_SOURCE" \
+            --version "$REQUESTED_VERSION"
+      - name: Recover only this validation's remaining containers
+        if: always() && env.FULL_CACHE_VALIDATION_RUN != ''
+        run: |
+          python3 -B scripts/verify-full-cache.py cleanup \
+            --validation-run "$FULL_CACHE_VALIDATION_RUN" --validation-kind full-cache \
+            > "$FULL_CACHE_ARCHIVE/cleanup.json"
+      - name: Unload the fixed profile only after its containers are gone
+        if: ${{ always() && (steps.policy.outcome == 'success' || steps.policy.outcome == 'failure') }}
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          identifiers = subprocess.check_output(['docker', 'ps', '--all', '--quiet'], text=True).split()
+          template = '{"profile":{{json .AppArmorProfile}},"security":{{json .HostConfig.SecurityOpt}}}'
+          for identifier in identifiers:
+              actual = json.loads(subprocess.check_output(['docker', 'inspect', '--format', template, identifier], text=True))
+              if actual.get('profile') == 'camact-gvisor-v1' or 'apparmor=camact-gvisor-v1' in (actual.get('security') or []):
+                  raise SystemExit('A container still references the fixed profile; retaining enforcement')
+          PY
+          sudo -n apparmor_parser --remove deploy/camact-gvisor-v1.profile
+      - name: Retain only bounded aggregate evidence
+        if: always() && env.FULL_CACHE_ARCHIVE != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: full-cache-validation
+          path: |
+            ${{ env.FULL_CACHE_ARCHIVE }}/README.md
+            ${{ env.FULL_CACHE_ARCHIVE }}/manifest.json
+            ${{ env.FULL_CACHE_ARCHIVE }}/report.json
+            ${{ env.FULL_CACHE_ARCHIVE }}/summary.json
+            ${{ env.FULL_CACHE_ARCHIVE }}/cleanup.json
+          if-no-files-found: warn
+          retention-days: 7
+          # Never upload private/, dataset manifests, cache, task/album data,
+          # raw logs, secret files or a registry/cache copy of the dataset.

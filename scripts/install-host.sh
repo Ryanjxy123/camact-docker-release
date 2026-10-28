@@ -18,7 +18,11 @@ if ! command -v systemctl >/dev/null 2>&1 || [[ ! -d /run/systemd/system ]]; the
   exit 1
 fi
 apt-get update
-apt-get install -y ca-certificates curl tar xz-utils iptables uidmap util-linux python3
+apt-get install -y ca-certificates curl tar xz-utils iptables uidmap util-linux python3 apparmor
+# Validate/load the fixed named Runner policy before installing Docker.
+# Existing Docker hosts can invoke this scoped installer independently.
+camact_host_script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+bash "$camact_host_script_dir/install-gvisor-policy.sh" install
 camact_install_tmp=$(mktemp -d -t camact-host-install-XXXXXXXX)
 trap 'rm -rf -- "$camact_install_tmp"' EXIT
 curl -fL --retry 3 https://download.docker.com/linux/static/stable/x86_64/docker-28.5.1.tgz -o "$camact_install_tmp/docker.tgz"

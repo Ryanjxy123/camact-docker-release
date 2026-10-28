@@ -1,0 +1,110 @@
+name: Validate synthetic Docker stop and kill recovery
+on:
+  workflow_dispatch:
+    inputs:
+      image_run_id:
+        description: 'Successful publish.yml dispatch producing camact-verified-image'
+        type: string
+        required: true
+      expected_source_revision:
+        description: 'Exact source SHA shared by current checkout and verified image run'
+        type: string
+        required: true
+      version:
+        description: 'Verified immutable image version'
+        type: string
+        required: true
+        default: '0.1.0-rc.1'
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: recovery-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Allocate the explicit private recovery archive
+        env:
+          EXPECTED_SOURCE: ${{ inputs.expected_source_revision }}
+        run: |
+          python3 - <<'PY'
+          import datetime, os, pathlib, re, subprocess, zoneinfo
+          source = os.environ['EXPECTED_SOURCE']
+          if not re.fullmatch(r'[0-9a-f]{40}', source) or source != os.environ['GITHUB_SHA']:
+              raise SystemExit('Expected source must equal workflow HEAD')
+          if subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip() != source:
+              raise SystemExit('Checkout does not match expected source')
+          day = datetime.datetime.now(zoneinfo.ZoneInfo('Asia/Shanghai')).date().isoformat()
+          name = 'camact-docker-recovery-v1-' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT']
+          archive = pathlib.Path(os.environ['GITHUB_WORKSPACE']) / 'harness' / '_log' / day / name
+          archive.mkdir(parents=True, exist_ok=False)
+          archive.chmod(0o700)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write('RECOVERY_ARCHIVE=' + str(archive) + '\n')
+              output.write('RECOVERY_VALIDATION_RUN=' + os.environ['GITHUB_RUN_ID'] + '-' + os.environ['GITHUB_RUN_ATTEMPT'] + '\n')
+          PY
+      - name: Scan the release source
+        run: python3 scripts/scan-release.py --tracked
+      - name: Install the production policy with the single synthetic cache identity
+        run: |
+          sudo -n bash scripts/install-gvisor-policy.sh install \
+            --data-dir "$RECOVERY_ARCHIVE/private/data" \
+            --repo-id fixture/recovery --revision 0000000000000000000000000000000000000000
+      - name: Execute the original scheduler against local deterministic synthetic tasks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_RUN_ID: ${{ inputs.image_run_id }}
+          EXPECTED_SOURCE: ${{ inputs.expected_source_revision }}
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 -B scripts/verify-docker-recovery.py run \
+            --output "$RECOVERY_ARCHIVE" --repository "$GITHUB_REPOSITORY" \
+            --image-run-id "$IMAGE_RUN_ID" \
+            --expected-source-revision "$EXPECTED_SOURCE" --version "$REQUESTED_VERSION"
+      - name: Remove only this run's residual containers
+        if: always() && env.RECOVERY_ARCHIVE != ''
+        run: |
+          python3 -B scripts/verify-full-cache.py cleanup \
+            --validation-run "$RECOVERY_VALIDATION_RUN" --validation-kind recovery \
+            > "$RECOVERY_ARCHIVE/cleanup.json"
+      - name: Unload the policy only when no container references it
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          inventory = subprocess.run(['docker', 'ps', '--all', '--quiet', '--no-trunc'], capture_output=True, text=True)
+          if inventory.returncode:
+              raise SystemExit('Container inventory unavailable; policy retained')
+          for value in inventory.stdout.split():
+              if not re.fullmatch(r'[0-9a-f]{64}', value):
+                  raise SystemExit('Invalid container identity; policy retained')
+              inspected = subprocess.run(['docker', 'inspect', '--format', '{{json .}}', value], capture_output=True, text=True)
+              if inspected.returncode:
+                  raise SystemExit('Container policy unavailable; profile retained')
+              item = json.loads(inspected.stdout)
+              if item.get('AppArmorProfile') == 'camact-gvisor-v1' or 'apparmor=camact-gvisor-v1' in ((item.get('HostConfig') or {}).get('SecurityOpt') or []):
+                  raise SystemExit('A container still references the policy; profile retained')
+          profile = '/etc/apparmor.d/camact-gvisor-v1'
+          if os.path.isfile(profile):
+              if subprocess.run(['sudo', '-n', 'apparmor_parser', '--remove', profile]).returncode:
+                  raise SystemExit('Profile removal failed after container cleanup')
+          PY
+      - name: Retain only aggregate recovery evidence
+        if: always() && env.RECOVERY_ARCHIVE != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-recovery-validation
+          path: |
+            ${{ env.RECOVERY_ARCHIVE }}/README.md
+            ${{ env.RECOVERY_ARCHIVE }}/manifest.json
+            ${{ env.RECOVERY_ARCHIVE }}/report.json
+            ${{ env.RECOVERY_ARCHIVE }}/summary.json
+            ${{ env.RECOVERY_ARCHIVE }}/cleanup.json
+          if-no-files-found: warn
+          retention-days: 7

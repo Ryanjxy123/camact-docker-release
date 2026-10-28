@@ -5,8 +5,24 @@ umask 077
 camact_verify_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$camact_verify_root"
 camact_verify_id="docker-gates-$(date -u +%Y%m%dt%H%M%Sz)-$RANDOM"
-camact_verify_archive="$camact_verify_root/.validation/$camact_verify_id"
+camact_verify_archive=$(python3 - "$camact_verify_root" "$camact_verify_id" <<'PY_ARCHIVE'
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import os
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+day = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+archive = Path(os.environ.get("ARCHIVE_ROOT") or root / "harness/_log" / day / ("camact-docker-v1-" + sys.argv[2])).absolute()
+if archive == root or (archive / "private").exists() or (archive / "verification-summary.json").exists():
+    raise SystemExit("An unused explicit verification archive is required")
+archive.mkdir(parents=True, exist_ok=True)
+print(archive)
+PY_ARCHIVE
+)
 mkdir -p "$camact_verify_archive/private"
+printf '%s\n' "$camact_verify_id" >"$camact_verify_archive/verification-project.txt"
+printf 'Docker verification archive: %s\n' "$camact_verify_archive"
 camact_verify_records="$camact_verify_archive/private/stages.tsv"
 : >"$camact_verify_records"
 camact_verify_status=0
@@ -16,9 +32,16 @@ camact_verify_record() {
 camact_verify_finish() {
   python3 - "$camact_verify_records" "$camact_verify_archive/verification-summary.json" <<'PY_REPORT'
 import json
+import importlib.util
+import os
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 import sys
 from pathlib import Path
 from release.diagnostics import PREFIX
+spec = importlib.util.spec_from_file_location("runner_policy", Path("scripts/verify-runner-policy.py"))
+policy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(policy)
 stages = []
 diagnostics = {
     "network-disabled-offline-tests": ("camact.offline-diagnostics.v1", "offline-tests-network-disabled.json"),
@@ -49,8 +72,16 @@ for line in Path(sys.argv[1]).read_text().splitlines():
             Path(sys.argv[2]).parent.joinpath(filename).write_text(json.dumps(value, indent=2) + "\n")
             item["diagnostics_status"] = "recorded"
             item["diagnostics_file"] = filename
+            if value.get("diagnostic_only") is True:
+                item["diagnostic_only"] = True
+                item["collector_result"] = result
+                item["observed_status"] = "FAIL" if '"FAIL"' in json.dumps(value) else "UNKNOWN"
+                if result == "PASS":
+                    item["result"] = "COLLECTED"
             if result == "FAIL" or value.get("diagnostic_only"):
                 print(json.dumps({"stage": stage, "diagnostics": value}, sort_keys=True))
+        if item["diagnostics_status"] != "recorded":
+            item.update(result="FAIL", exit_code=125, diagnostics_status="INCOMPLETE")
     if result == "FAIL":
         # Fixed categories help diagnose CI without exposing exception text,
         # candidate values, command arguments, host paths or credential data.
@@ -62,12 +93,39 @@ for line in Path(sys.argv[1]).read_text().splitlines():
             b"modulenotfounderror": "python_module_missing", b"assertionerror": "assertion_failed",
             b"timed out": "timeout"}
         item["observed_error_categories"] = [code for phrase, code in categories.items() if phrase in observed]
+        target = Path(sys.argv[2]).parent / "failure-logs"
+        target.mkdir(exist_ok=True)
+        with log.open("rb") as stream:
+            raw = stream.read(2 * 1024 * 1024 + 65536)
+        content = policy.sanitized(raw.decode(errors="replace"))
+        (target / (stage + ".log")).write_text(content.encode()[:2 * 1024 * 1024].decode(errors="ignore"))
+        item["failure_log_truncated"] = len(raw) > 2 * 1024 * 1024
     stages.append(item)
-failed = next((item for item in stages if item["result"] != "PASS"), None)
+failed = next((item for item in stages if item["result"] != "PASS" and not (
+    item.get("diagnostic_only") is True and item["result"] == "COLLECTED" and item.get("collector_result") == "PASS")), None)
 report = {"result": "FAIL" if failed else "PASS", "stage": failed["stage"] if failed else "complete",
           "exit_code": failed["exit_code"] if failed else 0, "stages": stages,
           "synthetic_credentials_only": True, "raw_logs_uploaded": False}
 Path(sys.argv[2]).write_text(json.dumps(report, indent=2) + "\n")
+archive = Path(sys.argv[2]).parent
+identity = json.loads((archive / "image-identity.json").read_text()) if (archive / "image-identity.json").is_file() else {}
+identifier = (archive / "verification-project.txt").read_text().strip()
+started = datetime.strptime(identifier.removeprefix("docker-gates-").rsplit("-", 1)[0], "%Y%m%dt%H%M%Sz").replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Asia/Shanghai")).isoformat()
+manifest = {"schema": "camact.docker-verification.v1", "result": report["result"], "image": identity,
+            "started_at": started, "method": "camact-docker-v1-production",
+            "synthetic_only": True, "formal_benchmark_executed": False,
+            "full_hf_validation": "not_default", "stop_resume_validation": "not_default",
+            "files": ["verification-summary.json", "image-security-scan.json", "runner-policy/", "failure-logs/"]}
+(archive / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+(archive / "RUN-README.md").write_text("# CamAct Docker verification\n\n"
+    + "Started (Asia/Shanghai): " + started + "\n"
+    + "Method: original synthetic Docker gates with actual runner policy barrier.\n"
+    + "Archive: " + str(archive) + "\n"
+    + "Source revision: " + str(identity.get("source_revision", os.environ.get("CAMACT_SOURCE_REVISION", "unavailable"))) + "\n"
+    + "Version: " + str(identity.get("version", "unavailable")) + "\n"
+    + "Reports: manifest.json, verification-summary.json, image-security-scan.json, runner-policy/, failure-logs/.\n"
+    + "Raw synthetic logs/configuration stay in private/ and are excluded from uploads.\n"
+    + "Canonical Benchmark, GT/rubric, Simulator, Baseline and Unified Evaluator are unchanged.\n")
 print("Docker verification " + report["result"] + ": " + str(len(stages)) + " stages recorded")
 PY_REPORT
 }
@@ -76,6 +134,7 @@ PY_REPORT
 camact_verify_run() {
   local stage=$1
   shift
+  camact_verify_current_stage=$stage
   printf 'Docker verification stage: %s\n' "$stage"
   set +e
   ( set -Eeuo pipefail; "$@" ) >"$camact_verify_archive/private/$stage.log" 2>&1
@@ -110,6 +169,11 @@ unset COMPOSE_FILE COMPOSE_PROFILES COMPOSE_PROJECT_NAME COMPOSE_ENV_FILES COMPO
 camact_verify_base=(docker compose --profile tools --env-file /dev/null --project-directory "$camact_verify_root" -f "$camact_verify_root/compose.yaml")
 camact_verify_config="$camact_verify_archive/private/compose.json"
 camact_verify_compose=(docker compose --env-file /dev/null --project-directory "$camact_verify_root" --project-name "$camact_verify_id" -f "$camact_verify_config")
+camact_verify_runner() {
+  python3 -B scripts/verify-runner-policy.py run --compose-config "$camact_verify_config" \
+    --project "$camact_verify_id" --image "$camact_verify_image_id" --output "$camact_verify_archive" \
+    --stage "$camact_verify_current_stage" -- "$@"
+}
 camact_verify_initialize() {
   ./camactctl init
   # camactctl build used to set this label before building, then execute
@@ -131,6 +195,8 @@ source = json.loads((root / "compose-source.json").read_text())
 # inputs and mounts are isolated. No external .env/env_file is read.
 runner = source["services"]["runner"]
 storage = source["services"]["storage-init"]
+for service in (runner, storage):
+    service.setdefault("labels", {})["com.camact.verification"] = root.parent.joinpath("verification-project.txt").read_text().strip()
 # Compose config materializes the caller project's default network name.
 # Let the unique verification project own its own networks and cleanup.
 source.pop("name", None)
@@ -246,12 +312,12 @@ if [[ "$camact_verify_status" != 0 ]]; then
 fi
 # All container commands, including build's former storage-init side effect,
 # are below the immutable image scan and tracked source security gates.
-camact_verify_run network-disabled-offline-tests docker run --rm --network=none --entrypoint python "$camact_verify_image_id" -B scripts/run-offline-tests.py
-camact_verify_run network-disabled-runtime-checks docker run --rm --network=none --entrypoint python "$camact_verify_image_id" -B scripts/check-runtimes.py
+camact_verify_run network-disabled-offline-tests docker run --rm --network=none --label "com.camact.verification=$camact_verify_id" --entrypoint python "$camact_verify_image_id" -B scripts/run-offline-tests.py
+camact_verify_run network-disabled-runtime-checks docker run --rm --network=none --label "com.camact.verification=$camact_verify_id" --entrypoint python "$camact_verify_image_id" -B scripts/check-runtimes.py
 camact_verify_fixture_repo="Fixture/Container-Smoke-$camact_verify_id"
 camact_verify_fixture_revision='0000000000000000000000000000000000000000'
 camact_verify_create_cache() {
-  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/verify-benchmark-cache.py \
+  camact_verify_runner python -B scripts/verify-benchmark-cache.py \
     --cache-root /var/lib/camact/benchmark --repo "$camact_verify_fixture_repo" \
     --revision "$camact_verify_fixture_revision" --create
 }
@@ -269,12 +335,12 @@ print(json.dumps({"status": "PASS", "file_count": first["file_count"],
 PY
 }
 camact_verify_reuse_cache() {
-  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/verify-benchmark-cache.py \
+  camact_verify_runner python -B scripts/verify-benchmark-cache.py \
     --cache-root /var/lib/camact/benchmark --repo "$camact_verify_fixture_repo" \
     --revision "$camact_verify_fixture_revision" >"$camact_verify_archive/private/benchmark-mount-$1.json"
 }
 camact_verify_preflight() {
-  "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/gvisor-preflight.py --context container
+  camact_verify_runner python -B scripts/gvisor-preflight.py --context container
 }
 camact_verify_full_cache() {
   # Explicit opt-in only. The existing cache stays in place; all model config,
@@ -294,11 +360,9 @@ if not cache.is_dir() or cache.is_symlink():
 source["services"]["runner"]["volumes"].append({"type": "bind", "source": str(cache), "target": "/var/lib/camact/benchmark"})
 Path(sys.argv[3]).write_text(json.dumps(source) + "\n")
 PY_FULL
-  docker compose --env-file /dev/null --project-directory "$camact_verify_root" --project-name "$camact_verify_id" \
-    -f "$camact_verify_archive/private/compose-full-cache.json" run --rm -T --entrypoint python \
-    -e CAMACT_VERIFY_REPO="${CAMACT_VERIFY_BENCHMARK_REPO:-Ryanjxy/CamAct-Benchmark}" \
-    -e CAMACT_VERIFY_REVISION="${CAMACT_VERIFY_BENCHMARK_COMMIT:-53e2f450042485dfc4a3b566de6f46988c3a5661}" \
-    runner -B -c 'import json, os; from release.benchmark import ensure; repo=os.environ["CAMACT_VERIFY_REPO"]; revision=os.environ["CAMACT_VERIFY_REVISION"]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] > 0; print(json.dumps({"file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))' \
+  local camact_verify_config="$camact_verify_archive/private/compose-full-cache.json"
+  camact_verify_runner python -B -c 'import json, sys; from release.benchmark import ensure; repo,revision=sys.argv[1:]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] > 0; print(json.dumps({"file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))' \
+    "${CAMACT_VERIFY_BENCHMARK_REPO:-Ryanjxy/CamAct-Benchmark}" "${CAMACT_VERIFY_BENCHMARK_COMMIT:-53e2f450042485dfc4a3b566de6f46988c3a5661}" \
     >"$camact_verify_archive/private/benchmark-full-offline.json"
 }
 camact_verify_run storage-initialization "${camact_verify_compose[@]}" --profile tools run --rm -T storage-init
@@ -324,16 +388,16 @@ if [[ "$camact_verify_storage_status" == 0 ]]; then
     camact_verify_run full-benchmark-cache-offline-reuse camact_verify_full_cache
   fi
   camact_verify_run runner-sandbox-preflight camact_verify_preflight
-  camact_verify_run ripgrep-runtime "${camact_verify_compose[@]}" run --rm -T --entrypoint /usr/bin/rg runner --version
-  camact_verify_run native-gvisor-runtimes-and-credential-boundary "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/check-runtimes.py --sandbox
+  camact_verify_run ripgrep-runtime camact_verify_runner /usr/bin/rg --version
+  camact_verify_run native-gvisor-runtimes-and-credential-boundary camact_verify_runner python -B scripts/check-runtimes.py --sandbox
   camact_verify_gvisor_status=$camact_verify_status
-  camact_verify_run native-image-codecs "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/check-codecs.py
-  camact_verify_run offline-tests-in-compose "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/run-offline-tests.py
+  camact_verify_run native-image-codecs camact_verify_runner python -B scripts/check-codecs.py
+  camact_verify_run offline-tests-in-compose camact_verify_runner python -B scripts/run-compose-offline-tests.py --output "/var/lib/camact/scratch/$camact_verify_id/offline-tests"
   for camact_verify_harness in claude codex opencode deepseek openclaw; do
     for camact_verify_mode in single_turn multi_turn users_history; do
       stage="native-loop-$camact_verify_harness-$camact_verify_mode"
       if [[ "$camact_verify_gvisor_status" == 0 ]]; then
-        camact_verify_run "$stage" "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B scripts/native-loop-smoke.py \
+        camact_verify_run "$stage" camact_verify_runner python -B scripts/native-loop-smoke.py \
           --harness "$camact_verify_harness" --mode "$camact_verify_mode" \
           --output "/var/lib/camact/scratch/$camact_verify_id/$camact_verify_harness-$camact_verify_mode"
       else
@@ -341,10 +405,10 @@ if [[ "$camact_verify_storage_status" == 0 ]]; then
       fi
     done
   done
-  camact_verify_run persistence-marker-creation "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B -c \
+  camact_verify_run persistence-marker-creation camact_verify_runner python -B -c \
     'from pathlib import Path; import sys; p=Path("/var/lib/camact/checkpoints")/sys.argv[1]; p.write_text(sys.argv[1]); print("persistence marker created")' "$camact_verify_id"
   if [[ "$camact_verify_status" == 0 ]]; then
-    camact_verify_run persistence-marker-recreated-container "${camact_verify_compose[@]}" run --rm -T --entrypoint python runner -B -c \
+    camact_verify_run persistence-marker-recreated-container camact_verify_runner python -B -c \
       'from pathlib import Path; import sys; p=Path("/var/lib/camact/checkpoints")/sys.argv[1]; assert p.read_text()==sys.argv[1]; p.unlink(); print("recreated-container persistence PASS")' "$camact_verify_id"
   else
     camact_verify_skip persistence-marker-recreated-container persistence-marker-creation

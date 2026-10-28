@@ -1,5 +1,9 @@
 **
 !Dockerfile
+!deploy/
+deploy/*
+!deploy/seccomp-gvisor.json
+!deploy/camact-gvisor-v1.profile
 !camactctl
 !locks/
 !locks/**
@@ -58,6 +62,7 @@ docs/*
 **/*.key
 **/id_rsa
 **/.validation
+**/_log
 **/.tools
 **/.data
 **/.secrets

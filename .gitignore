@@ -1,4 +1,5 @@
 .validation/
+harness/_log/
 .tools/
 .data/
 .secrets/
