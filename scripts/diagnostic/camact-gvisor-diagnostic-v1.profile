@@ -8,10 +8,14 @@
 # runsc/cmd/sentry/sentrycmd/chroot.go.
 abi <abi/4.0>,
 #include <tunables/global>
-@{CAMACT_PRODUCTION_STATE}=/var/lib/camact/scratch/gvisor/run-* /var/lib/camact/scratch/camact-sandbox-check-*/gvisor-state/run-*
+@{CAMACT_PRODUCTION_STATE}=/var/lib/camact/scratch/gvisor/run-* /var/lib/camact/scratch/camact-sandbox-check-*/gvisor-state/run-* /var/lib/camact/scratch/docker-gates-*/gvisor-state/run-*
 @{CAMACT_PLAN_FIXTURE}=/var/lib/camact/scratch/production-plan-fixture-*
 @{CAMACT_VERSION_FIXTURE}=/var/lib/camact/scratch/camact-sandbox-check-*/{claude,codex,opencode,deepseek,openclaw,credential-boundary}
-@{CAMACT_PROBE_WORKSPACE}=@{CAMACT_PLAN_FIXTURE}/workspace @{CAMACT_VERSION_FIXTURE}/workspace
+@{CAMACT_NATIVE_CASE}=/var/lib/camact/scratch/docker-gates-*/{claude,codex,opencode,deepseek,openclaw}-{single_turn,multi_turn,users_history}
+@{CAMACT_SHARED_NATIVE_CASE}=/var/lib/camact/scratch/docker-gates-*/{codex,opencode,deepseek,openclaw}-{single_turn,multi_turn,users_history}
+@{CAMACT_CLAUDE_NATIVE_CASE}=/var/lib/camact/scratch/docker-gates-*/claude-{single_turn,multi_turn,users_history}
+@{CAMACT_NATIVE_WORKSPACE}=@{CAMACT_SHARED_NATIVE_CASE}/run/runs/execution/workspace @{CAMACT_CLAUDE_NATIVE_CASE}/run/runs/execution/tasks/fixture_user/task_fixture/workspace
+@{CAMACT_PROBE_WORKSPACE}=@{CAMACT_PLAN_FIXTURE}/workspace @{CAMACT_VERSION_FIXTURE}/workspace @{CAMACT_NATIVE_WORKSPACE}
 @{CAMACT_PROBE_HOME}=@{CAMACT_PLAN_FIXTURE}/home @{CAMACT_VERSION_FIXTURE}/home
 profile camact-gvisor-diagnostic-v1 flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
@@ -116,4 +120,22 @@ profile camact-gvisor-diagnostic-v1 flags=(attach_disconnected,mediate_deleted) 
   mount options=(ro,remount,rbind,nosuid,nodev,strictatime) -> /proc/fs/root/{etc/ssl/certs/,etc/fonts/,etc/ld.so.cache,etc/localtime,opt/camact/runtime/[01]/,opt/node,tmp/album/,tmp/context/,tmp/.camact/,synthetic/users/fixture-user/base_memory/,transport/},
   mount options=(rw,remount,rbind,nosuid,nodev,relatime) -> /proc/fs/root/{tmp/,home/agent/},
   mount options=(rw,remount,rbind,nosuid,nodev,strictatime) -> /proc/fs/root/{tmp/,home/agent/},
+
+  # Original five-CLI x three-mode smoke entrypoints, synthetic sources only.
+  # Claude has a separate config HOME; OpenClaw HOME and UDS live on noexec
+  # tmpfs. The locked Gofer retains these source flags during its remount.
+  mount options=(rw,rbind,nosuid,nodev) /var/lib/camact/scratch/docker-gates-*/{codex,opencode,deepseek}-{single_turn,multi_turn,users_history}/run/runs/execution/home/ -> /proc/fs/root/home/agent/,
+  mount options=(rw,rbind,nosuid,nodev) @{CAMACT_CLAUDE_NATIVE_CASE}/run/runs/execution/tasks/fixture_user/task_fixture/claude_config/attempt_[0-9][0-9]/ -> /proc/fs/root/home/,
+  mount options=(rw,rbind,nosuid,nodev) /run/camact/openclaw/camact-openclaw-*/home/ -> /proc/fs/root/home/agent/,
+  mount options=(ro,rbind,nosuid,nodev) @{CAMACT_NATIVE_WORKSPACE}/album/ -> /proc/fs/root@{CAMACT_NATIVE_CASE}/synthetic-benchmark/users/fixture_user/base_memory/,
+  mount options=(ro,rbind,nosuid,nodev) /tmp/camact-transport-*/ -> /proc/fs/root/transport/,
+  mount options=(ro,rbind,nosuid,nodev) /tmp/camact-native-relay-*/camact-multi-*/ -> /proc/fs/root/transport/,
+  mount options=(ro,remount,rbind,nosuid,nodev,relatime) -> /proc/fs/root@{CAMACT_NATIVE_CASE}/synthetic-benchmark/users/fixture_user/base_memory/,
+  mount options=(ro,remount,rbind,nosuid,nodev,strictatime) -> /proc/fs/root@{CAMACT_NATIVE_CASE}/synthetic-benchmark/users/fixture_user/base_memory/,
+  mount options=(ro,remount,rbind,nosuid,nodev,noexec,relatime) -> /proc/fs/root/transport/,
+  mount options=(ro,remount,rbind,nosuid,nodev,noexec,strictatime) -> /proc/fs/root/transport/,
+  mount options=(rw,remount,rbind,nosuid,nodev,relatime) -> /proc/fs/root/home/,
+  mount options=(rw,remount,rbind,nosuid,nodev,strictatime) -> /proc/fs/root/home/,
+  mount options=(rw,remount,rbind,nosuid,nodev,noexec,relatime) -> /proc/fs/root/home/agent/,
+  mount options=(rw,remount,rbind,nosuid,nodev,noexec,strictatime) -> /proc/fs/root/home/agent/,
 }

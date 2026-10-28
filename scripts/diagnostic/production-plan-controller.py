@@ -7,7 +7,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import shutil
 import sys
@@ -28,6 +28,76 @@ CANARY = "camact-production-plan-synthetic-secret-only\n"
 CAPTURE_BYTES = 2 * 1024 * 1024
 ARTIFACT_BYTES = 4 * 1024 * 1024
 IMAGE_MANIFEST_SCHEMA = "camact.gvisor.diagnostic-image.v1"
+NATIVE_CASES = tuple((name, mode) for name in ("claude", "codex", "opencode", "deepseek", "openclaw")
+                     for mode in ("single_turn", "multi_turn", "users_history"))
+NATIVE_INDEX_SCHEMA = "camact.gvisor.native-artifacts.v1"
+NATIVE_CASE_BYTES = 32 * 1024 * 1024
+NATIVE_CASE_FILES = 256
+NATIVE_ASSERTIONS = {
+    "native_tool_assertions": {"readonly_resources_and_no_secrets", "rejected_invalid_business_actions", "history_context"},
+    "token_accounting_assertions": {"agent_request_count", "agent_capture_complete", "agent_usage_complete",
+        "agent_tokens_exact", "all_roles_request_count", "all_roles_tokens_exact", "all_roles_capture_complete", "formal_evaluation_linked"},
+    "sandbox_lifecycle_assertions": {"production_gvisor_executed", "all_states_removed", "trusted_credentials_absent"},
+}
+
+
+def native_artifact_allowed(name):
+    path = PurePosixPath(name)
+    parts = path.parts
+    if not parts or path.is_absolute() or ".." in parts or path.as_posix() != name or "\\" in name:
+        return False
+    if name in {"validation.json", "run/result.json", "run/token_usage/accounting_v3/summary.json",
+                "run/runs/standard_run_artifacts.jsonl"}:
+        return True
+    if parts[0] != "run":
+        return False
+    return ((len(parts) >= 4 and parts[-3] == "sandbox-launches" and parts[-1] in {"plan.json", "lifecycle.json"})
+            or parts[-1] in {"turn.json", "native_conversation.json"}
+            or (parts[-1] == "requests.jsonl" and "token_usage" in parts))
+
+
+# This host-supplied wrapper executes the unchanged in-image acceptance script.
+# Only bounded, reviewed evidence paths enter its inventory, never the album,
+# synthetic task tree, model configuration or fixture request/response payloads.
+NATIVE_WRAPPER = r'''
+import hashlib,json,os,pathlib,subprocess,sys
+root=pathlib.Path(sys.argv[3])
+status=dict(line.split(':',1) for line in pathlib.Path('/proc/self/status').read_text().splitlines() if ':' in line)
+outer=(os.getuid()==10001 and os.getgid()==10001
+    and int(status['CapEff'].strip(),16)==0 and int(status['CapBnd'].strip(),16)==0
+    and status['NoNewPrivs'].strip()=='1' and status['Seccomp'].strip()=='2'
+    and pathlib.Path('/proc/self/attr/current').read_text().strip()=='camact-gvisor-diagnostic-v1 (enforce)')
+index={'schema':'camact.gvisor.native-artifacts.v1','outer_policy':outer,'files':[],'errors':[]}
+rc=125
+try:
+    if not outer: raise RuntimeError('outer_policy')
+    rc=subprocess.run([sys.executable,'-B','/opt/camact/scripts/native-loop-smoke.py',
+        '--harness',sys.argv[1],'--mode',sys.argv[2],'--output',str(root)]).returncode
+finally:
+    root.mkdir(parents=True,exist_ok=True)
+    def allowed(path):
+        p=path.parts
+        name=path.as_posix()
+        return (name in {'validation.json','run/result.json','run/token_usage/accounting_v3/summary.json',
+                        'run/runs/standard_run_artifacts.jsonl'}
+            or (p[0]=='run' and ((len(p)>=4 and p[-3]=='sandbox-launches' and p[-1] in {'plan.json','lifecycle.json'})
+                or p[-1] in {'turn.json','native_conversation.json'}
+                or (p[-1]=='requests.jsonl' and 'token_usage' in p))))
+    total=0
+    for path in sorted(root.rglob('*')):
+        relative=path.relative_to(root)
+        if not allowed(relative): continue
+        if path.is_symlink() or not path.resolve().is_relative_to(root.resolve()) or not path.is_file():
+            index['errors'].append('artifact_type'); continue
+        size=path.stat().st_size
+        if size>4194304 or total+size>33554432 or len(index['files'])>=256:
+            index['errors'].append('artifact_limit'); continue
+        total+=size
+        index['files'].append({'path':relative.as_posix(),'bytes':size,'sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    index['script_returncode']=rc
+    (root/'native-artifact-index.json').write_text(json.dumps(index)+'\n')
+sys.exit(rc)
+'''
 # These files configure the host-side diagnostic only. The in-image probe,
 # every runtime/core module, Dockerfile, Compose, scanner and lock stay critical.
 REUSE_SAFE_FILES = frozenset({
@@ -125,6 +195,23 @@ def status(item):
     return item.get("status", item.get("result")) if isinstance(item, dict) else None
 
 
+def normalized_capabilities(values):
+    """Docker may prefix capability names with CAP_; reject malformed sets."""
+    if values is None:
+        return frozenset()
+    if not isinstance(values, (list, tuple)):
+        return None
+    names = []
+    for value in values:
+        if not isinstance(value, str):
+            return None
+        name = value[4:] if value.startswith("CAP_") else value
+        if not re.fullmatch(r"[A-Z][A-Z0-9_]*", name) or name.startswith("CAP_") or name in names:
+            return None
+        names.append(name)
+    return frozenset(names)
+
+
 def lifecycle_ok(value):
     return (isinstance(value, dict) and value.get("returncode") == 0
             and value.get("cleanup_returncode") == 0 and value.get("state_removed") is True)
@@ -178,6 +265,115 @@ def validate_inner(report, artifacts, check_runtimes=True):
     return errors
 
 
+def trusted_environment_name(name):
+    return (name.startswith(("AGENT_API_KEY", "JUDGE_API_KEY", "SIMULATOR_API_KEY"))
+            or name in {"CAMACT_ZCLOUD_API_KEY", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN", "HUGGINGFACE_HUB_TOKEN"})
+
+
+def validate_native(evidence, harness, mode, case_output):
+    """Keep the existing smoke assertions and verify their retained evidence."""
+    errors = []
+    row = evidence.get("validation.json")
+    if not isinstance(row, dict):
+        return ["validation_missing"]
+    if (row.get("harness") != harness or row.get("mode") != mode or row.get("fixture_only") is not True
+            or type(row.get("real_model_calls")) is not int or row["real_model_calls"] != 0
+            or type(row.get("canonical_tasks_run")) is not int or row["canonical_tasks_run"] != 0
+            or any(row.get(key) is not True for key in ("passed", "listener_closed", "script_completed", "prompt_injected"))
+            or row.get("visual_status") != "visual_verified"
+            or type(row.get("agent_requests")) is not int or row["agent_requests"] <= 0
+            or type(row.get("simulator_requests")) is not int
+            or row.get("simulator_requests") != (3 if mode == "multi_turn" else 0)):
+        errors.append("validation_contract")
+    for field, required in NATIVE_ASSERTIONS.items():
+        assertions = row.get(field)
+        if not isinstance(assertions, dict) or set(assertions) != required or any(value is not True for value in assertions.values()):
+            errors.append(field)
+    result = evidence.get("run/result.json", {})
+    evaluations = result.get("evaluations") if isinstance(result, dict) else None
+    if (not isinstance(result, dict) or result.get("schema_version") != "camact.standard_evaluation_result.v1"
+            or not isinstance(evaluations, list) or len(evaluations) != 1 or not isinstance(evaluations[0], dict)
+            or evaluations[0].get("strict_success") is not True or evaluations[0].get("infrastructure_failure") is not False
+            or evaluations[0].get("agent_failure") is not False or evaluations[0].get("user_id") != "fixture_user"
+            or evaluations[0].get("task_id") != "fixture_user_OFFLINE"
+            or any(result.get("summary", {}).get(key) != value for key, value in (
+                ("total_tasks", 1), ("evaluated_tasks", 1), ("strict_success_count", 1),
+                ("agent_failure_count", 0), ("infrastructure_failure_count", 0)))
+            or row.get("evaluation") != evaluations[0]):
+        errors.append("formal_evaluation")
+    artifacts = evidence.get("run/runs/standard_run_artifacts.jsonl")
+    if (not isinstance(artifacts, list) or len(artifacts) != 1 or not isinstance(artifacts[0], dict)
+            or artifacts[0].get("schema_version") != "camact.standard_run_artifact.v1"
+            or artifacts[0].get("trajectory_class") != "finished"
+            or artifacts[0].get("visual_evidence", {}).get("status") != "visual_verified"):
+        errors.append("visual_artifact")
+    ledgers = row.get("token_request_ledgers")
+    if (not isinstance(ledgers, list) or not ledgers or len(ledgers) != len(set(ledgers))
+            or any(not isinstance(name, str) or not native_artifact_allowed(name) or not name.endswith("requests.jsonl")
+                   or not isinstance(evidence.get(name), list) or not evidence[name] for name in ledgers)):
+        errors.append("token_ledgers")
+    elif not any(item.get("run_id") == case_output + "/run" and item.get("harness_id") == harness
+                 for name in ledgers for item in evidence[name] if isinstance(item, dict)):
+        errors.append("token_ledger_case_identity")
+    try:
+        summary = evidence["run/token_usage/accounting_v3/summary.json"]
+        agent = summary["views"]["all_attempts"][harness]
+        roles = summary["all_roles_all_attempts"]
+        calls, simulator = row["agent_requests"], row["simulator_requests"]
+        accounting = (summary["schema_version"] == "camact.token_accounting.v3"
+            and agent["http_attempt_count"] == calls and agent["capture_complete"] is True
+            and agent["usage_coverage"] == 1.0 and agent["unknown_or_unreliable_usage_requests"] == 0
+            and all(agent["exact_tokens"][key] == multiple * calls for key, multiple in (
+                ("input_tokens", 10), ("output_tokens", 5), ("total_tokens", 15)))
+            and roles["http_attempt_count"] == calls + simulator and roles["capture_complete"] is True
+            and roles["exact_tokens"]["total_tokens"] == 15 * (calls + simulator)
+            and summary["formal_results"][harness]["scored_tasks"] == 1
+            and summary["formal_results"][harness]["strict_success_count"] == 1)
+    except (KeyError, TypeError, ValueError):
+        accounting = False
+    if not accounting:
+        errors.append("accounting_evidence")
+    plans = {name.rsplit("/", 1)[0]: value for name, value in evidence.items()
+             if name.endswith("/plan.json") and "/sandbox-launches/" in name}
+    lifecycles = {name.rsplit("/", 1)[0]: value for name, value in evidence.items()
+                  if name.endswith("/lifecycle.json") and "/sandbox-launches/" in name}
+    if not plans or set(plans) != set(lifecycles):
+        errors.append("plan_lifecycle_pairs")
+    state_parent = str(PurePosixPath(case_output).parent / "gvisor-state")
+    for name, plan in plans.items():
+        if (not isinstance(plan, dict) or plan.get("schema") != "camact.gvisor.launch.v1"
+                or plan.get("state_parent") != state_parent or not plan.get("mounts")
+                or plan.get("metadata") != case_output + "/" + name
+                or any(trusted_environment_name(key) for key in plan.get("environment", {}))):
+            errors.append("launch_plan:" + name)
+            continue
+        workspace = [mount for mount in plan["mounts"] if isinstance(mount, dict) and mount.get("type") == "bind"
+                     and mount.get("destination") in {"/tmp", "/tmp/album", "/tmp/context", "/tmp/.camact"}]
+        if (not any(mount.get("destination") == "/tmp" for mount in workspace)
+                or any(not isinstance(mount.get("source"), str) or not mount["source"].startswith(case_output + "/")
+                       or ".." in PurePosixPath(mount["source"]).parts for mount in workspace)):
+            errors.append("workspace_case_identity:" + name)
+    for name, item in lifecycles.items():
+        if (not isinstance(item, dict) or item.get("backend") != "gvisor" or item.get("platform") != "systrap"
+                or item.get("network") != "none" or item.get("host_proc_bound") is not False
+                or type(item.get("returncode")) is not int or type(item.get("parent_disconnected")) is not bool
+                or item.get("cleanup_returncode") != 0 or item.get("state_removed") is not True
+                or not str(item.get("state", "")).startswith(state_parent + "/run-")
+                or not isinstance(item.get("guest_environment_keys"), list)
+                or any(not isinstance(key, str) or trusted_environment_name(key) for key in item.get("guest_environment_keys", []))):
+            errors.append("sandbox_lifecycle:" + name)
+    turns = [value for name, value in evidence.items() if name.endswith("/turn.json")]
+    conversations = [value for name, value in evidence.items() if name.endswith("/native_conversation.json")]
+    native_records = (any(isinstance(item, dict) and isinstance(item.get("invocations"), list) and item["invocations"]
+                          for item in conversations) if harness == "claude" else
+                      bool(turns) and all(isinstance(item, dict) and type(item.get("returncode")) is int
+                          and type(item.get("timed_out")) is bool and isinstance(item.get("decision"), dict)
+                          for item in turns) and any(item["decision"].get("action") == "finish" for item in turns))
+    if not native_records:
+        errors.append("native_turn_evidence")
+    return errors
+
+
 def tmpfs_map(service):
     result = {}
     for value in service.get("tmpfs", []):
@@ -227,12 +423,18 @@ def requested_mounts_match(actual, expected):
 
 
 class Controller:
-    def __init__(self, output, check_runtimes=True):
+    def __init__(self, output, check_runtimes=True, native_matrix=False):
         self.output = Path(output).absolute()
         self.check_runtimes = check_runtimes
+        self.native_matrix = native_matrix
+        self.native_started = False
+        self.native_prefix = "/var/lib/camact/scratch/docker-gates-" + uuid.uuid4().hex
         self.report = {"schema": "camact.gvisor.production-plan-controller.v1", "scope": "diagnostic_candidate_only",
                        "expected_apparmor": PROFILE, "tests": [], "logs": [], "check_runtimes": check_runtimes,
                        "synthetic_credentials_only": True, "model_requests": False}
+        self.report["native_matrix_requested"] = native_matrix
+        if native_matrix:
+            self.report["native_matrix"] = []
         self.image_id = None
         self.scanned = False
         self.fixture = self.output / "private-fixture-data"
@@ -286,7 +488,7 @@ class Controller:
                      and runner.get("pids_limit") == 4096 and runner.get("platform") == "linux/amd64"
                      and not any(runner.get(key) for key in ("privileged", "env_file", "environment", "secrets", "volumes")))
         storage_ok = (storage.get("user") == "0:0" and storage.get("cap_drop") == ["ALL"]
-                      and set(storage.get("cap_add", [])) == {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
+                      and normalized_capabilities(storage.get("cap_add")) == {"CHOWN", "DAC_OVERRIDE", "FOWNER"}
                       and storage.get("read_only") is True and storage.get("network_mode") == "none"
                       and storage.get("entrypoint") == ["python", "-B", "/opt/camact/scripts/init-storage.py"]
                       and not any(storage.get(key) for key in ("privileged", "env_file", "environment", "secrets", "volumes", "security_opt")))
@@ -304,7 +506,7 @@ class Controller:
         actual = json.loads(result["stdout"])
         security = actual.get("security_opt") or []
         valid = (actual.get("image") == self.image_id and actual.get("cap_drop") == ["ALL"]
-                 and set(actual.get("cap_add") or []) == set(caps) and actual.get("read_only") is True
+                 and normalized_capabilities(actual.get("cap_add")) == normalized_capabilities(caps) and actual.get("read_only") is True
                  and not actual.get("privileged") and actual.get("network") == "none"
                  and (mount_matches(actual.get("mounts"), mounts, tmpfs_map(service) if role == "runner" else ())
                       if started else requested_mounts_match(actual.get("requested_mounts"), mounts))
@@ -421,6 +623,145 @@ class Controller:
         self.report["probe_artifacts"] = files
         self.check("inner_report", not errors, ", ".join(errors))
 
+    def runner_command(self, name, service, mounts, arguments, *, openclaw=False):
+        self.check(name + ".scan_prerequisite", self.scanned and bool(self.image_id))
+        argv = ["docker", "create", "--name", name, "--platform", service["platform"], "--user", service["user"],
+                "--cap-drop=ALL", "--read-only", "--pids-limit", str(service["pids_limit"]), "--network=none",
+                "--security-opt=no-new-privileges:true", "--security-opt=seccomp=" + str(ROOT / "deploy/seccomp-gvisor.json"),
+                "--security-opt=apparmor=" + PROFILE]
+        for target, options in tmpfs_map(service).items():
+            argv += ["--tmpfs", target + ":" + options]
+        for target, (source, writable) in mounts.items():
+            argv += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
+        if openclaw:
+            argv += ["--env", "CAMACT_OPENCLAW_TMPDIR=/run/camact/openclaw"]
+        return argv + ["--entrypoint", "python", self.image_id, "-B", *arguments]
+
+    def native_artifacts(self, container, case_output, target, stage):
+        target.mkdir(parents=True)
+        index_path = target / "native-artifact-index.json"
+        self.execute(stage + ".artifact_index_copy", ["docker", "cp", container + ":" + case_output + "/native-artifact-index.json", index_path])
+        if index_path.is_symlink():
+            index_path.unlink()
+            self.check(stage + ".artifact_index_file", False, "Rejected symbolic link index removed")
+        self.check(stage + ".artifact_index_file", index_path.is_file() and not index_path.is_symlink()
+                   and index_path.stat().st_size <= 256 * 1024)
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        entries = index.get("files") if isinstance(index, dict) else None
+        valid = (isinstance(index, dict) and index.get("schema") == NATIVE_INDEX_SCHEMA
+                 and index.get("outer_policy") is True and index.get("script_returncode") == 0
+                 and index.get("errors") == [] and isinstance(entries, list) and 0 < len(entries) <= NATIVE_CASE_FILES)
+        seen, total = set(), 0
+        for item in entries or []:
+            if not isinstance(item, dict):
+                valid = False
+                continue
+            name = item.get("path")
+            if (not isinstance(name, str) or not native_artifact_allowed(name) or name in seen
+                    or type(item.get("bytes")) is not int or not 0 <= item["bytes"] <= ARTIFACT_BYTES
+                    or not isinstance(item.get("sha256"), str) or not re.fullmatch(r"[0-9a-f]{64}", item["sha256"])):
+                valid = False
+                continue
+            seen.add(name)
+            total += item["bytes"]
+        valid = valid and total <= NATIVE_CASE_BYTES
+        # Even an incomplete script inventory retains its valid, bounded evidence.
+        self.check(stage + ".artifact_index", valid, "Bounded whitelist and actual outer policy", stop=False)
+        index_path.write_text(json.dumps(diag.clean(index), indent=2) + "\n", encoding="utf-8")
+        structural = (isinstance(entries, list) and len(seen) == len(entries) and 0 < len(entries) <= NATIVE_CASE_FILES
+                      and total <= NATIVE_CASE_BYTES)
+        if not structural:
+            return {}, ["artifact_inventory_invalid"]
+        evidence, errors = {}, []
+        for number, item in enumerate(entries):
+            name = item["path"]
+            path = target.joinpath(*PurePosixPath(name).parts)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            copied = self.execute(stage + f".artifact_{number:03d}", ["docker", "cp", container + ":" + case_output + "/" + name, path], stop=False)
+            if copied["returncode"] or not path.is_file() or path.is_symlink():
+                if path.is_symlink():
+                    path.unlink()
+                errors.append("artifact_copy:" + name)
+                continue
+            if path.stat().st_size != item["bytes"] or path.stat().st_size > ARTIFACT_BYTES:
+                path.unlink()
+                errors.append("artifact_size:" + name)
+                continue
+            raw = path.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != item["sha256"]:
+                path.unlink()
+                errors.append("artifact_digest:" + name)
+                continue
+            text = raw.decode("utf-8", errors="replace")
+            try:
+                if path.suffix == ".jsonl":
+                    value = [json.loads(line) for line in text.splitlines() if line.strip()]
+                    if not value or not all(isinstance(row, dict) for row in value):
+                        raise ValueError("JSONL records missing")
+                    sanitized = "".join(json.dumps(diag.clean(row), ensure_ascii=False) + "\n" for row in value)
+                else:
+                    value = json.loads(text)
+                    sanitized = json.dumps(diag.clean(value), ensure_ascii=False, indent=2) + "\n"
+                evidence[name] = value
+            except (ValueError, TypeError):
+                errors.append("artifact_json:" + name)
+                sanitized = diag.redact(text, limit=None)
+            if len(sanitized.encode("utf-8")) > ARTIFACT_BYTES:
+                errors.append("sanitized_artifact_limit:" + name)
+                evidence.pop(name, None)
+                path.unlink()
+                continue
+            path.write_text(sanitized, encoding="utf-8")
+        return evidence, errors
+
+    def run_native_matrix(self, service, mounts):
+        self.native_started = True
+        for harness, mode in NATIVE_CASES:
+            key = harness + "-" + mode
+            stage = "native." + key
+            container = self.runner + "-" + key.replace("_", "-")
+            case_output = self.native_prefix + "/" + key
+            row = {"harness": harness, "mode": mode, "outcome": "FAIL", "artifacts": [], "lifecycles": {}}
+            first_check = len(self.report["tests"])
+            created = False
+            try:
+                argv = self.runner_command(container, service, mounts, ["-c", NATIVE_WRAPPER, harness, mode, case_output],
+                                           openclaw=harness == "openclaw")
+                created = True
+                self.execute(stage + ".create", argv)
+                self.inspect(container, stage, role="runner", mounts=mounts, service=service)
+                self.execute(stage + ".start", ["docker", "start", "--attach", container], timeout=300, stop=False)
+                actual = self.inspect(container, stage + ".started", role="runner", mounts=mounts, service=service, started=True)
+                state = actual.get("state") or {}
+                self.check(stage + ".exit", state.get("Status") == "exited" and state.get("ExitCode") == 0
+                           and not state.get("OOMKilled") and not state.get("Error"), stop=False)
+                target = self.output / "native-artifacts" / key
+                evidence, errors = self.native_artifacts(container, case_output, target, stage)
+                row["artifacts"] = sorted(evidence)
+                row["lifecycles"] = {name: value for name, value in evidence.items() if name.endswith("/lifecycle.json")}
+                errors += validate_native(evidence, harness, mode, case_output)
+                row["validation_errors"] = errors
+                self.check(stage + ".evidence", not errors, ", ".join(errors), stop=False)
+            except Stop as exc:
+                row["failure_stage"] = str(exc)
+            except Exception as exc:
+                self.check(stage + ".exception", False, type(exc).__name__, stop=False)
+            finally:
+                if created:
+                    self.execute(stage + ".cleanup", ["docker", "rm", "--force", container], stop=False)
+                row["outcome"] = "PASS" if all(status(item) == "PASS" for item in self.report["tests"][first_check:]) else "FAIL"
+                self.report["native_matrix"].append(row)
+        self.check("native_matrix", len(self.report["native_matrix"]) == len(NATIVE_CASES)
+                   and all(item["outcome"] == "PASS" for item in self.report["native_matrix"]), stop=False)
+
+    def skip_native_matrix(self):
+        self.report["native_matrix"] = [{"harness": name, "mode": mode, "outcome": "SKIP",
+            "dependency": "production_plan_and_all_runtime_boundaries"} for name, mode in NATIVE_CASES]
+        for name, mode in NATIVE_CASES:
+            self.report["tests"].append(diag.row("controller", "native." + name + "-" + mode, "SKIP",
+                detail="Production-plan and all five runtime/credential checks must pass first"))
+        self.check("native_matrix", False, "Production prerequisites did not all pass", stop=False)
+
     def run(self, image, reused_image_manifest=None):
         self.output.mkdir(parents=True, exist_ok=False)
         self.report["image_reuse_requested"] = reused_image_manifest is not None
@@ -469,17 +810,10 @@ class Controller:
                         tuple(storage["cap_add"]), ["-B", "/opt/camact/scripts/init-storage.py"], "storage")
             self.check("fixture_bind_path", self.safe_fixture() and not data.is_symlink() and not secrets.is_symlink())
             mounts = {"/var/lib/camact": (data, True), "/run/secrets/production-plan-fixture": (secrets / "agent_api_key", False)}
-            argv = ["docker", "create", "--name", self.runner, "--platform", service["platform"], "--user", service["user"],
-                    "--cap-drop=ALL", "--read-only", "--pids-limit", str(service["pids_limit"]), "--network=none",
-                    "--security-opt=no-new-privileges:true", "--security-opt=seccomp=" + str(ROOT / "deploy/seccomp-gvisor.json"),
-                    "--security-opt=apparmor=" + PROFILE]
-            for target, options in tmpfs_map(service).items():
-                argv += ["--tmpfs", target + ":" + options]
-            for target, (source, writable) in mounts.items():
-                argv += ["--mount", f"type=bind,src={source},dst={target}" + ("" if writable else ",readonly")]
-            argv += ["--entrypoint", "python", self.image_id, "-B", "/opt/camact/scripts/diagnostic/production-plan-probe.py", "--output", INNER_OUTPUT]
+            arguments = ["/opt/camact/scripts/diagnostic/production-plan-probe.py", "--output", INNER_OUTPUT]
             if self.check_runtimes:
-                argv += ["--check-runtimes"]
+                arguments += ["--check-runtimes"]
+            argv = self.runner_command(self.runner, service, mounts, arguments)
             self.runner_created = True
             self.execute("runner_create", argv)
             self.inspect(self.runner, "runner", role="runner", mounts=mounts, service=service)
@@ -489,11 +823,15 @@ class Controller:
             self.check("runner_exit", state.get("Status") == "exited" and state.get("ExitCode") == 0
                        and not state.get("OOMKilled") and not state.get("Error"), stop=False)
             self.artifacts()
+            if self.native_matrix and self.check_runtimes and all(status(item) == "PASS" for item in self.report["tests"]):
+                self.run_native_matrix(service, mounts)
         except Stop:
             pass
         except Exception as exc:
             self.check("controller_exception", False, type(exc).__name__, stop=False)
         finally:
+            if self.native_matrix and not self.native_started:
+                self.skip_native_matrix()
             if self.runner_created:
                 self.execute("runner_cleanup", ["docker", "rm", "--force", self.runner], stop=False)
             self.cleanup_fixture()
@@ -525,9 +863,10 @@ def main(argv=None):
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--skip-check-runtimes", action="store_true")
     parser.add_argument("--reused-image-manifest", type=Path)
+    parser.add_argument("--native-matrix", action="store_true", help="Run all 15 original synthetic native CLI acceptance cases")
     args = parser.parse_args(argv)
     os.umask(0o077)
-    report = Controller(args.output, check_runtimes=not args.skip_check_runtimes).run(
+    report = Controller(args.output, check_runtimes=not args.skip_check_runtimes, native_matrix=args.native_matrix).run(
         args.image, reused_image_manifest=args.reused_image_manifest)
     print(json.dumps({"schema": report["schema"], "outcome": report["outcome"], "model_requests": False}))
     return 0 if report["outcome"] == "PASS" else 1

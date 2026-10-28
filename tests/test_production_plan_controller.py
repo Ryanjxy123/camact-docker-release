@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -74,6 +75,57 @@ def compose():
             "entrypoint": ["python", "-B", "/opt/camact/scripts/init-storage.py"]}}}
 
 
+def native_evidence(harness, mode, output):
+    requests = 6
+    simulator = 3 if mode == "multi_turn" else 0
+    evaluation = {"user_id": "fixture_user", "task_id": "fixture_user_OFFLINE", "strict_success": True,
+                  "agent_failure": False, "infrastructure_failure": False}
+    result = {"schema_version": "camact.standard_evaluation_result.v1", "evaluations": [evaluation],
+              "summary": {"total_tasks": 1, "evaluated_tasks": 1, "strict_success_count": 1,
+                          "agent_failure_count": 0, "infrastructure_failure_count": 0}}
+    ledger = "run/token_usage/requests.jsonl"
+    row = {"fixture_only": True, "real_model_calls": 0, "canonical_tasks_run": 0, "harness": harness, "mode": mode,
+           "passed": True, "listener_closed": True, "script_completed": True, "prompt_injected": True,
+           "visual_status": "visual_verified", "agent_requests": requests, "simulator_requests": simulator,
+           "token_request_ledgers": [ledger], "evaluation": evaluation,
+           **{field: {key: True for key in keys} for field, keys in controller.NATIVE_ASSERTIONS.items()}}
+    parent = output.rsplit("/", 1)[0] + "/gvisor-state"
+    state = {**lifecycle(), "backend": "gvisor", "platform": "systrap", "network": "none", "host_proc_bound": False,
+             "state": parent + "/run-fixture", "parent_disconnected": False, "guest_environment_keys": ["HOME", "PATH"]}
+    summary = {"schema_version": "camact.token_accounting.v3", "views": {"all_attempts": {harness: {
+        "http_attempt_count": requests, "capture_complete": True, "usage_coverage": 1.0,
+        "unknown_or_unreliable_usage_requests": 0,
+        "exact_tokens": {"input_tokens": 10 * requests, "output_tokens": 5 * requests, "total_tokens": 15 * requests}}}},
+        "all_roles_all_attempts": {"http_attempt_count": requests + simulator, "capture_complete": True,
+                                   "exact_tokens": {"total_tokens": 15 * (requests + simulator)}},
+        "formal_results": {harness: {"scored_tasks": 1, "strict_success_count": 1}}}
+    artifact = {"schema_version": "camact.standard_run_artifact.v1", "trajectory_class": "finished",
+                "visual_evidence": {"status": "visual_verified"}}
+    values = {"validation.json": row, "run/result.json": result,
+            "run/runs/standard_run_artifacts.jsonl": [artifact],
+            "run/token_usage/accounting_v3/summary.json": summary,
+            ledger: [{"fixture_only": True, "run_id": output + "/run", "harness_id": harness}],
+            "run/runs/execution/sandbox-launches/fixture/plan.json": {
+                "schema": "camact.gvisor.launch.v1", "state_parent": parent,
+                "metadata": output + "/run/runs/execution/sandbox-launches/fixture",
+                "mounts": [{"type": "bind", "source": output + "/run/runs/execution/workspace", "destination": "/tmp"}],
+                "environment": {"HOME": "/home/agent"}},
+            "run/runs/execution/sandbox-launches/fixture/lifecycle.json": state,
+            "run/runs/execution/native_turns/turn_001/turn.json": {"returncode": 0, "timed_out": False,
+                "decision": {"action": "finish", "reason": "completed"}}}
+    if harness == "claude":
+        values.pop("run/runs/execution/native_turns/turn_001/turn.json")
+        values["run/runs/execution/session_attempts/fixture_user/task_fixture/attempt_01/native_conversation.json"] = {
+            "invocations": [{"returncode": 0, "timed_out": False, "controlled_stop": False}],
+            "simulator_continuations": []}
+    return values
+
+
+def evidence_bytes(name, value):
+    return (("".join(json.dumps(row) + "\n" for row in value) if name.endswith(".jsonl") else json.dumps(value))
+            .encode("utf-8"))
+
+
 class DockerFixture:
     def __init__(self, *, scan_pass=True, drift=None, helper_drift=None, report=None, omit=(),
                  empty_created_mounts=False, timeout_role=None, image_revision=REVISION):
@@ -92,6 +144,9 @@ class DockerFixture:
         self.image_version = controller.VERSION
         self.image_id = IMAGE
         self.dirty_paths = set()
+        self.native_mutation = None
+        self.native_drift = None
+        self.native_payloads = {}
         self.trees = {REVISION: dict(BASE_TREE), SOURCE_REVISION: dict(BASE_TREE)}
 
     def __call__(self, argv, timeout=20):
@@ -142,12 +197,21 @@ class DockerFixture:
                     tmpfs[target] = options
                 elif value == "--cap-add":
                     caps.append(argv[index + 1])
-            self.containers[name] = {"image": IMAGE, "user": user, "cap_drop": ["ALL"], "cap_add": caps,
+            self.containers[name] = {"image": IMAGE, "user": user, "cap_drop": ["ALL"],
+                "cap_add": [cap if cap.startswith("CAP_") else "CAP_" + cap for cap in caps],
                 "read_only": True, "privileged": False, "pids_limit": 4096 if user == "10001:10001" else None,
                 "apparmor": "", "security_opt": security, "network": "none", "tmpfs": tmpfs,
                 "mounts": mounts, "requested_mounts": [
                     {"Type": item["Type"], "Source": item["Source"], "Target": item["Destination"], "ReadOnly": not item["RW"]}
                     for item in mounts], "state": {"Status": "created", "ExitCode": 0}}
+            if controller.NATIVE_WRAPPER in argv:
+                harness, mode, output = argv[-3:]
+                key = harness + "-" + mode
+                self.containers[name].update(native_key=key, case_output=output)
+                values = native_evidence(harness, mode, output)
+                if self.native_mutation:
+                    self.native_mutation(harness, mode, values)
+                self.native_payloads[key] = values
             role = "runner" if user == "10001:10001" else "helper"
             if self.timeout_role == role:
                 timed_out = result(124, stderr="Synthetic create timeout")
@@ -160,6 +224,8 @@ class DockerFixture:
                 actual[self.drift[0]] = self.drift[1]
             if self.helper_drift and actual["user"] == "0:0":
                 actual[self.helper_drift[0]] = self.helper_drift[1]
+            if self.native_drift and actual.get("native_key") == self.native_drift[0]:
+                actual[self.native_drift[1]] = self.native_drift[2]
             if self.empty_created_mounts and actual["state"]["Status"] == "created":
                 actual["mounts"] = []
             return result(stdout=json.dumps(actual))
@@ -170,6 +236,21 @@ class DockerFixture:
             return result(stdout="fixed synthetic output")
         if argv[:2] == ["docker", "cp"]:
             destination = Path(argv[-1])
+            container, _, path = argv[-2].partition(":")
+            actual = self.containers[container]
+            if actual.get("native_key"):
+                values = self.native_payloads[actual["native_key"]]
+                relative = path.removeprefix(actual["case_output"] + "/")
+                if relative == "native-artifact-index.json":
+                    index = {"schema": controller.NATIVE_INDEX_SCHEMA, "outer_policy": True, "script_returncode": 0,
+                             "errors": [], "files": [{"path": name, "bytes": len(evidence_bytes(name, value)),
+                                 "sha256": hashlib.sha256(evidence_bytes(name, value)).hexdigest()} for name, value in values.items()]}
+                    destination.write_text(json.dumps(index), encoding="utf-8")
+                elif relative in values:
+                    destination.write_bytes(evidence_bytes(relative, values[relative]))
+                else:
+                    return result(1)
+                return result()
             values = {"report.json": json.dumps(self.report), "summary.md": "Synthetic PASS\n",
                       "plan.json": "{}", "lifecycle.json": json.dumps(lifecycle())}
             for name, content in values.items():
@@ -233,7 +314,7 @@ class SourceDigestTests(unittest.TestCase):
 
 
 class ControllerTests(unittest.TestCase):
-    def invoke(self, fixture, manifest=None):
+    def invoke(self, fixture, manifest=None, *, native_matrix=False):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         output = Path(temporary.name) / "production-plan"
@@ -242,8 +323,217 @@ class ControllerTests(unittest.TestCase):
             manifest_path = Path(temporary.name) / "reuse-manifest.json"
             manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         with mock.patch.object(controller.diag, "command", side_effect=fixture):
-            report = controller.Controller(output).run("camact:gvisor-diagnostic", reused_image_manifest=manifest_path)
+            report = controller.Controller(output, native_matrix=native_matrix).run(
+                "camact:gvisor-diagnostic", reused_image_manifest=manifest_path)
         return report, output
+
+    def test_native_matrix_collects_all_fifteen_independent_hardened_runners(self):
+        fixture = DockerFixture()
+        report, output = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "PASS")
+        self.assertEqual({(item["harness"], item["mode"]) for item in report["native_matrix"]}, set(controller.NATIVE_CASES))
+        self.assertTrue(all(item["outcome"] == "PASS" for item in report["native_matrix"]))
+        creates = [argv for argv in fixture.calls if argv[:2] == ["docker", "create"] and controller.NATIVE_WRAPPER in argv]
+        self.assertEqual(len(creates), 15)
+        self.assertEqual(len({argv[argv.index("--name") + 1] for argv in creates}), 15)
+        for argv in creates:
+            self.assertIn(IMAGE, argv)
+            self.assertIn("--network=none", argv)
+            self.assertIn("--cap-drop=ALL", argv)
+            self.assertIn("--read-only", argv)
+            self.assertIn("--security-opt=no-new-privileges:true", argv)
+            self.assertIn("--security-opt=apparmor=" + controller.PROFILE, argv)
+            self.assertRegex(argv[-1], r"^/var/lib/camact/scratch/docker-gates-[0-9a-f]{32}/[a-z]+-(?:single_turn|multi_turn|users_history)$")
+            if argv[-3] == "openclaw":
+                self.assertIn("CAMACT_OPENCLAW_TMPDIR=/run/camact/openclaw", argv)
+            else:
+                self.assertNotIn("--env", argv)
+        self.assertEqual(len(list((output / "native-artifacts").glob("*/validation.json"))), 15)
+        self.assertFalse(fixture.containers)
+        self.assertFalse((output / "private-fixture-data").exists())
+
+    def test_native_case_failure_does_not_skip_remaining_cases_or_erase_lifecycle_values(self):
+        fixture = DockerFixture()
+        def mutate(harness, mode, values):
+            if (harness, mode) == controller.NATIVE_CASES[0]:
+                values["validation.json"]["passed"] = False
+                for name, item in values.items():
+                    if name.endswith("/lifecycle.json"):
+                        item.update(returncode=27, cleanup_returncode=19, state_removed=False, parent_disconnected=True)
+        fixture.native_mutation = mutate
+        report, _ = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(len(fixture.native_payloads), 15)
+        self.assertEqual([item["outcome"] for item in report["native_matrix"]].count("PASS"), 14)
+        observed = next(iter(report["native_matrix"][0]["lifecycles"].values()))
+        self.assertEqual(observed["returncode"], 27)
+        self.assertEqual(observed["cleanup_returncode"], 19)
+        self.assertIs(observed["state_removed"], False)
+        self.assertIs(observed["parent_disconnected"], True)
+        self.assertFalse(fixture.containers)
+
+    def test_native_missing_evidence_does_not_pass_even_with_successful_exit(self):
+        fixture = DockerFixture()
+        def mutate(harness, mode, values):
+            if (harness, mode) == controller.NATIVE_CASES[0]:
+                del values["run/token_usage/accounting_v3/summary.json"]
+        fixture.native_mutation = mutate
+        report, _ = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(len(fixture.native_payloads), 15)
+        self.assertIn("accounting_evidence", report["native_matrix"][0]["validation_errors"])
+
+    def test_native_prerequisite_failure_records_fifteen_real_skips_without_starting_them(self):
+        inner = inner_report()
+        inner["tests"][0]["status"] = "FAIL"
+        fixture = DockerFixture(report=inner)
+        report, _ = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(len(report["native_matrix"]), 15)
+        self.assertTrue(all(item["outcome"] == "SKIP" for item in report["native_matrix"]))
+        self.assertFalse(fixture.native_payloads)
+
+    def test_native_permission_drift_prevents_start_cleans_and_continues(self):
+        fixture = DockerFixture()
+        key = "-".join(controller.NATIVE_CASES[0])
+        fixture.native_drift = (key, "cap_add", ["SYS_ADMIN"])
+        report, _ = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(len(fixture.native_payloads), 15)
+        bad = next(argv[argv.index("--name") + 1] for argv in fixture.calls
+                   if argv[:2] == ["docker", "create"] and controller.NATIVE_WRAPPER in argv and argv[-3:-1] == list(controller.NATIVE_CASES[0]))
+        self.assertFalse(any(argv[:2] == ["docker", "start"] and argv[-1] == bad for argv in fixture.calls))
+        self.assertTrue(any(argv[:3] == ["docker", "rm", "--force"] and argv[-1] == bad for argv in fixture.calls))
+        self.assertFalse(fixture.containers)
+
+    def test_native_validation_rejects_report_contract_and_evidence_mismatches(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
+        mutations = (
+            lambda values: values["validation.json"].update(real_model_calls=1),
+            lambda values: values["validation.json"].update(listener_closed=False),
+            lambda values: values["validation.json"]["native_tool_assertions"].clear(),
+            lambda values: values["run/token_usage/accounting_v3/summary.json"]["all_roles_all_attempts"].update(http_attempt_count=999),
+            lambda values: values["run/runs/standard_run_artifacts.jsonl"][0].update(trajectory_class="infrastructure_failure"),
+            lambda values: values.pop("run/runs/execution/sandbox-launches/fixture/plan.json"),
+            lambda values: values.pop("run/runs/execution/native_turns/turn_001/turn.json"),
+            lambda values: values["run/runs/execution/sandbox-launches/fixture/lifecycle.json"].update(guest_environment_keys=["HF_TOKEN"]),
+        )
+        for number, mutate in enumerate(mutations):
+            with self.subTest(mutation=number):
+                values = native_evidence("codex", "single_turn", output)
+                mutate(values)
+                self.assertTrue(controller.validate_native(values, "codex", "single_turn", output))
+
+    def test_native_controlled_stop_preserves_actual_nonzero_exit_without_reclassifying_core(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/opencode-multi_turn"
+        values = native_evidence("opencode", "multi_turn", output)
+        values["run/runs/execution/sandbox-launches/fixture/lifecycle.json"].update(returncode=-15, parent_disconnected=True)
+        values["run/runs/execution/native_turns/turn_001/turn.json"].update(returncode=-15,
+            simulator_stopped=True, decision={"action": "finish", "reason": "simulator_stop"})
+        self.assertEqual(controller.validate_native(values, "opencode", "multi_turn", output), [])
+        self.assertEqual(values["run/runs/execution/sandbox-launches/fixture/lifecycle.json"]["returncode"], -15)
+
+    def test_native_formal_failure_flags_must_be_explicit_false(self):
+        output = "/var/lib/camact/scratch/docker-gates-fixture/codex-single_turn"
+        for field in ("agent_failure", "infrastructure_failure"):
+            for missing in (False, True):
+                with self.subTest(field=field, missing=missing):
+                    values = native_evidence("codex", "single_turn", output)
+                    evaluation = values["run/result.json"]["evaluations"][0]
+                    if missing:
+                        del evaluation[field]
+                    else:
+                        evaluation[field] = None
+                    self.assertIn("formal_evaluation", controller.validate_native(values, "codex", "single_turn", output))
+
+    def test_native_rejected_symbolic_link_index_is_removed_before_upload(self):
+        fixture = DockerFixture()
+        original = Path.is_symlink
+        def linked(path):
+            return (path.name == "native-artifact-index.json" and path.parent.name == "claude-single_turn") or original(path)
+        with mock.patch.object(Path, "is_symlink", linked):
+            report, output = self.invoke(fixture, native_matrix=True)
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertEqual(len(fixture.native_payloads), 15)
+        self.assertFalse((output / "native-artifacts/claude-single_turn/native-artifact-index.json").exists())
+        self.assertTrue((output / "native-artifacts/codex-single_turn/native-artifact-index.json").is_file())
+        self.assertFalse(fixture.containers)
+
+    def test_native_whitelist_rejects_data_payloads_and_path_traversal(self):
+        for name in ("../validation.json", "/etc/passwd", "run/../validation.json", "fixture-upstream.json",
+                     "synthetic-benchmark/tasks/fixture_user/task_fixture/task.yaml", "run/workspace/.env", "run/raw.json"):
+            self.assertFalse(controller.native_artifact_allowed(name), name)
+
+    def test_native_cross_case_evidence_is_rejected_despite_shared_state_parent(self):
+        parent = "/var/lib/camact/scratch/docker-gates-fixture/"
+        source = native_evidence("codex", "single_turn", parent + "codex-single_turn")
+        target_output = parent + "codex-users_history"
+        target = native_evidence("codex", "users_history", target_output)
+        for name, value in source.items():
+            if "/sandbox-launches/" in name or name.endswith("/turn.json") or name.endswith("standard_run_artifacts.jsonl"):
+                target[name] = value
+        errors = controller.validate_native(target, "codex", "users_history", target_output)
+        self.assertTrue(any(error.startswith("launch_plan:") for error in errors))
+        target = native_evidence("codex", "users_history", target_output)
+        target["run/runs/execution/sandbox-launches/fixture/plan.json"]["mounts"][0]["source"] = parent + "codex-single_turn/run/runs/execution/workspace"
+        self.assertTrue(any(error.startswith("workspace_case_identity:") for error in controller.validate_native(
+            target, "codex", "users_history", target_output)))
+        target = native_evidence("codex", "users_history", target_output)
+        target["run/token_usage/requests.jsonl"] = source["run/token_usage/requests.jsonl"]
+        self.assertIn("token_ledger_case_identity", controller.validate_native(target, "codex", "users_history", target_output))
+
+    def test_helper_capabilities_accept_only_prefix_equivalence(self):
+        for caps in (["CHOWN", "DAC_OVERRIDE", "FOWNER"], ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"]):
+            with self.subTest(caps=caps):
+                fixture = DockerFixture(helper_drift=("cap_add", caps))
+                report, _ = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "PASS")
+        for caps in (["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CAP_SYS_ADMIN"],
+                     ["CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER", "CHOWN"],
+                     ["CAP_CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+                     ["cap_chown", "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+                     [" CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_FOWNER"],
+                     [None, "CAP_DAC_OVERRIDE", "CAP_FOWNER"]):
+            with self.subTest(caps=caps):
+                fixture = DockerFixture(helper_drift=("cap_add", caps))
+                report, _ = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(any(argv[:2] == ["docker", "start"] for argv in fixture.calls))
+                self.assertFalse(fixture.containers)
+
+    def test_native_wrapper_runs_only_original_script_and_inventories_whitelisted_bounded_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "case"
+            original_read = Path.read_text
+            def read(path, *args, **kwargs):
+                if str(path).replace("\\", "/") == "/proc/self/status":
+                    return "CapEff:\t0000000000000000\nCapBnd:\t0000000000000000\nNoNewPrivs:\t1\nSeccomp:\t2\n"
+                if str(path).replace("\\", "/") == "/proc/self/attr/current":
+                    return controller.PROFILE + " (enforce)"
+                return original_read(path, *args, **kwargs)
+            def run(argv):
+                self.assertEqual(argv[1:4], ["-B", "/opt/camact/scripts/native-loop-smoke.py", "--harness"])
+                self.assertEqual(argv[-3:], ["single_turn", "--output", str(output)])
+                output.mkdir()
+                for name, value in native_evidence("codex", "single_turn", str(output)).items():
+                    path = output.joinpath(*name.split("/"))
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    path.write_bytes(evidence_bytes(name, value))
+                (output / "fixture-upstream.json").write_text("not collected")
+                return mock.Mock(returncode=0)
+            with mock.patch("os.getuid", return_value=10001, create=True), \
+                    mock.patch("os.getgid", return_value=10001, create=True), \
+                    mock.patch.object(Path, "read_text", read), mock.patch("subprocess.run", side_effect=run), \
+                    mock.patch("sys.argv", ["-c", "codex", "single_turn", str(output)]):
+                with self.assertRaises(SystemExit) as stopped:
+                    exec(compile(controller.NATIVE_WRAPPER, "<native-wrapper>", "exec"), {})
+            self.assertEqual(stopped.exception.code, 0)
+            index = json.loads((output / "native-artifact-index.json").read_text())
+            self.assertIs(index["outer_policy"], True)
+            self.assertEqual(index["errors"], [])
+            self.assertTrue(index["files"])
+            self.assertTrue(all(controller.native_artifact_allowed(item["path"]) for item in index["files"]))
+            self.assertNotIn("fixture-upstream.json", {item["path"] for item in index["files"]})
 
     def test_scan_passes_before_every_helper_and_runner(self):
         fixture = DockerFixture()
