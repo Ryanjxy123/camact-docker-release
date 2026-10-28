@@ -23,12 +23,12 @@ profile camact-gvisor-diagnostic-v1 flags=(attach_disconnected,mediate_deleted) 
   signal (send,receive) peer=camact-gvisor-diagnostic-v1,
   ptrace (trace,tracedby,read,readby) peer=camact-gvisor-diagnostic-v1,
 
-  deny @{PROC}/* w,
+  audit deny @{PROC}/* w,
   # The Moby two-character directory pattern excludes exactly fs, the pinned
   # runsc staging tmpfs. All other original proc/sys denies are retained.
-  deny @{PROC}/{[^1-9/],[^1-9f/][^0-9/],f[^s0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
-  deny @{PROC}/sys/[^k]** w,
-  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  audit deny @{PROC}/{[^1-9/],[^1-9f/][^0-9/],f[^s0-9/],[^1-9s/][^0-9y/][^0-9s/],[^1-9/][^0-9/][^0-9/][^0-9/]*}/** w,
+  audit deny @{PROC}/sys/[^k]** w,
+  audit deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
   deny @{PROC}/sysrq-trigger rwklx,
   deny @{PROC}/kcore rwklx,
   deny /sys/[^f]*/** wklx,
@@ -47,6 +47,11 @@ profile camact-gvisor-diagnostic-v1 flags=(attach_disconnected,mediate_deleted) 
   mount fstype=tmpfs options=(rw,nosuid,nodev) -> /tmp/camact-diag-*/ns-*/target/,
   mount options=(rw,rbind) /tmp/camact-diag-*/ns-*/source/ -> /tmp/camact-diag-*/ns-*/target/,
   mount options=(ro,remount,bind,nosuid,nodev) -> /tmp/camact-diag-*/ns-*/target/,
+  mount options=(ro,remount,bind,nosuid,nodev,noexec) -> /tmp/camact-diag-*/ns-*/target/,
+  mount options=(ro,remount,bind,nosuid,nodev,relatime) -> /tmp/camact-diag-*/ns-*/target/,
+  mount options=(ro,remount,bind,nosuid,nodev,noexec,relatime) -> /tmp/camact-diag-*/ns-*/target/,
+  mount options=(ro,remount,bind,nosuid,nodev,strictatime) -> /tmp/camact-diag-*/ns-*/target/,
+  mount options=(ro,remount,bind,nosuid,nodev,noexec,strictatime) -> /tmp/camact-diag-*/ns-*/target/,
 
   # Gofer staging tree used by the locked runtime, inside a fresh user/mount ns.
   mount fstype=tmpfs options=(rw,nosuid,nodev,noexec) -> /proc/fs/,

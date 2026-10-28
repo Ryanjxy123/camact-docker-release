@@ -218,7 +218,7 @@ class LightweightDiagnosticSafety(unittest.TestCase):
                     self.assertNotIn("--privileged", argv)
                     self.assertFalse(any("unconfined" in v or "--cap-add" in v for v in argv))
                 elif argv[:2] == ["docker", "start"]:
-                    output = json.dumps({"environment": {"apparmor_current": {"value": "docker-default (enforce)"}},
+                    output = json.dumps({"environment": {"apparmor_current": {"status": "PASS", "value": "docker-default (enforce)"}},
                         "runsc_debug": "", "tests": [diagnostic.row("docker", "user_mount.unshare", "PASS"),
                         diagnostic.row("gvisor", "run", "PASS"), diagnostic.row("gvisor", "delete", "PASS")]})
                 elif argv[:2] not in (["docker", "pull"], ["docker", "rm"]):
@@ -237,8 +237,10 @@ class LightweightDiagnosticSafety(unittest.TestCase):
                     patch.dict(os.environ, {}, clear=True):
                 code = diagnostic.diagnose(Path(temporary))
                 report = json.loads((Path(temporary) / "report.json").read_text())
-                self.assertEqual(code, 1 if scan_failure else 0)
-                self.assertEqual(report["outcome"], "FAIL" if scan_failure else "PASS")
+                # This scan/cleanup fixture deliberately supplies only three
+                # nested rows. Missing namespace/lifecycle evidence cannot pass.
+                self.assertEqual(code, 1)
+                self.assertEqual(report["outcome"], "FAIL" if scan_failure else "INCOMPLETE")
                 self.assertEqual(any(call[:2] == ["docker", "create"] for call in calls), not scan_failure)
                 self.assertEqual(any(call[:2] == ["docker", "rm"] for call in calls), not scan_failure)
 

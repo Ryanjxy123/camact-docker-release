@@ -2,6 +2,12 @@ name: Diagnose gVisor environment
 
 on:
   workflow_dispatch:
+    inputs:
+      policy:
+        description: AppArmor experiment selection; candidate never changes production
+        type: choice
+        default: both
+        options: [both, candidate, baseline]
 
 permissions:
   contents: read
@@ -13,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        apparmor: [docker-default, camact-gvisor-diagnostic-v1]
+        apparmor: ${{ fromJSON(inputs.policy == 'candidate' && '["camact-gvisor-diagnostic-v1"]' || inputs.policy == 'baseline' && '["docker-default"]' || '["docker-default","camact-gvisor-diagnostic-v1"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

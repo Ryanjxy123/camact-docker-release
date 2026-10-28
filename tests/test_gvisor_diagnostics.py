@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -31,9 +32,9 @@ class DiagnosticsTests(unittest.TestCase):
         raw = (f'{canaries[0]} {canaries[1]} {canaries[2]} API_KEY="{canaries[3]}" '
                f'"HF_TOKEN": "{canaries[4]}" Authorization: Bearer {canaries[5]} '
                + 'https://' + 'user:pass@' + 'example.invalid/private?q=value '
-               + '/home/fixture/work/private \x1b[31mpermission denied\x00')
+               + '/home/fixture/work/private /root/diagnostic-private \x1b[31mpermission denied\x00')
         sanitized = diag.redact(raw)
-        for value in canaries + ["user:pass", "example.invalid", "work/private", "\x1b", "\x00"]:
+        for value in canaries + ["user:pass", "example.invalid", "work/private", "diagnostic-private", "\x1b", "\x00"]:
             self.assertNotIn(value, sanitized)
         self.assertIn("permission denied", sanitized)
         # A container-mounted script has no repository root; '/' must remain usable.
@@ -68,6 +69,95 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertIsNone(item["errno"])
         item = diag.command_row("gvisor", "run", result(1, stderr="mount: operation not permitted"))
         self.assertEqual((item["errno"], item["errno_source"]), (errno.EPERM, "stderr_inferred"))
+
+    def test_readonly_bind_preserves_source_locked_mount_flags(self):
+        for stat_flags, expected in ((os.ST_NOEXEC | os.ST_RELATIME | os.ST_NODIRATIME,
+                diag.MS_NOEXEC | diag.MS_RELATIME | diag.MS_NODIRATIME),
+                (os.ST_NOATIME, diag.MS_NOATIME), (0, diag.MS_STRICTATIME)):
+            with self.subTest(stat_flags=stat_flags), mock.patch.object(diag.os, "statvfs",
+                    return_value=SimpleNamespace(f_flag=stat_flags)):
+                flags = diag.readonly_bind_flags(Path("/fixture/source"))
+            required = diag.MS_BIND | diag.MS_REMOUNT | diag.MS_RDONLY | diag.MS_NOSUID | diag.MS_NODEV
+            self.assertEqual(flags, required | expected)
+
+    def test_outside_mount_requires_eacces_after_legal_mounts_and_cleans_unexpected_success(self):
+        original_write = Path.write_text
+        for denied_errno, expected in ((errno.EACCES, "PASS"), (errno.EPERM, "FAIL"), (None, "FAIL")):
+            with self.subTest(denied_errno=denied_errno), tempfile.TemporaryDirectory() as directory:
+                work = Path(directory)
+                calls = []
+
+                def write(path, value, *args, **kwargs):
+                    if str(path).startswith("/proc/self/"):
+                        return len(value)
+                    if value == "must fail":
+                        raise OSError(errno.EROFS, "Read-only file system")
+                    return original_write(path, value, *args, **kwargs)
+
+                def syscall(name, *args):
+                    calls.append((name, args))
+                    if name == "mount" and args[1] == os.fsencode(work / "outside") and denied_errno:
+                        raise OSError(denied_errno, os.strerror(denied_errno))
+
+                output = io.StringIO()
+                with mock.patch.object(diag, "syscall", side_effect=syscall), \
+                        mock.patch.object(Path, "write_text", autospec=True, side_effect=write), \
+                        mock.patch.object(diag.os, "statvfs", return_value=SimpleNamespace(f_flag=os.ST_NOEXEC | os.ST_RELATIME)), \
+                        contextlib.redirect_stdout(output):
+                    diag.probe("mount", work, "docker")
+                rows = json.loads(output.getvalue())
+                self.assertTrue(all(item["status"] == "PASS" for item in rows[:-1]))
+                self.assertEqual((rows[-1]["test"], rows[-1]["status"]), ("mount.outside_denied", expected))
+                readonly = next(item for item in rows if item["test"] == "mount.readonly")
+                self.assertIn("noexec", readonly["mount_flags"])
+                self.assertIn("relatime", readonly["mount_flags"])
+                self.assertEqual(any(name == "umount2" and args[0] == os.fsencode(work / "outside")
+                                     for name, args in calls), denied_errno is None)
+                if denied_errno == errno.EPERM:
+                    self.assertEqual(rows[-1]["errno_name"], "EPERM")
+
+    def test_debug_chunks_retain_early_errors_sanitize_before_split_and_bound_bytes(self):
+        token = "hf_" + "z" * 40
+        text = "EARLY_GOFER_FAILURE\n" + "a" * 15970 + " " + token + "\n" + "b" * 70000 + "\nTAIL_MARKER"
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "debug.log"
+            path.write_text(text)
+            chunks = []
+            tail, truncated = diag.capture_runsc_debug(path, chunks)
+            self.assertFalse(truncated)
+            self.assertTrue(all(len(part) <= 16000 for part in chunks))
+            self.assertEqual("".join(chunks), diag.redact(text, limit=None))
+            self.assertIn("EARLY_GOFER_FAILURE", chunks[0])
+            self.assertNotIn(token, "".join(chunks))
+            self.assertIn("TAIL_MARKER", tail)
+            self.assertLessEqual(len(tail), 24000)
+            path.write_text("EARLY_GOFER_FAILURE\n" + "界" * (diag.DEBUG_CAPTURE_BYTES // 3 + 100) + "TAIL_MARKER")
+            chunks = []
+            tail, truncated = diag.capture_runsc_debug(path, chunks)
+            self.assertTrue(truncated)
+            self.assertLessEqual(sum(len(part.encode("utf-8")) for part in chunks), 2 * 1024 * 1024)
+            self.assertTrue(all(len(part) <= 16000 for part in chunks))
+            self.assertIn("TAIL_MARKER", tail)
+
+    def test_runtime_debug_capture_marks_truncation_explicitly(self):
+        def command(argv, *args, **kwargs):
+            if "--version" in argv:
+                return result(stdout="runsc version fixture")
+            if "run" in argv:
+                debug_path = next(str(value).split("=", 1)[1] for value in argv if str(value).startswith("--debug-log="))
+                Path(debug_path).write_text("EARLY_GOFER_FAILURE\n" + "a" * (diag.DEBUG_CAPTURE_BYTES + 1))
+                return result(128, stderr="sandbox EOF")
+            return result(stdout="[]")
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(diag, "command", side_effect=command), \
+                mock.patch.object(diag, "syscall"), mock.patch.object(diag.os, "waitpid", side_effect=ChildProcessError):
+            chunks = []
+            rows, tail = diag.gvisor_tests(Path(directory), Path("/fixture/runsc"), [], "fixture", chunks)
+        capture = next(item for item in rows if item["test"] == "debug_capture")
+        self.assertEqual(capture["status"], "SKIP")
+        self.assertTrue(capture["truncated"])
+        self.assertIn("2 MiB", capture["detail"])
+        self.assertIn("EARLY_GOFER_FAILURE", chunks[0])
+        self.assertLessEqual(len(tail), 24000)
 
     def test_timeout_and_missing_command_are_failures(self):
         timed = diag.command([sys.executable, "-c", "import time; time.sleep(5)"], timeout=0.1)
@@ -209,6 +299,13 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertEqual(events[0]["name"], "/proc/self/fd/14")
         self.assertEqual(events[0]["capability"], "21")
 
+    def test_audit_preserves_proc_fs_mount_targets(self):
+        for path in ("/proc/fs", "/proc/fs/", "/proc/fs/proc/123/fd/", "/proc/fs/root/usr/"):
+            with self.subTest(path=path), mock.patch.object(diag, "command", return_value=result(stdout=
+                    'audit: type=1400 apparmor="DENIED" operation="mount" name="' + path + '"')):
+                _, events = diag.audit_records("fixture-time")
+            self.assertEqual(events[0]["name"], path)
+
     def test_minimal_success_never_claims_full_production_equivalence(self):
         report = {"tests": [diag.row("host", "user.unshare", "PASS"),
                             diag.row("docker", "production_equivalence", "SKIP"),
@@ -226,7 +323,7 @@ class DiagnosticsTests(unittest.TestCase):
                   "user.unshare", "user.setgroups", "user.uid_map", "user.gid_map",
                   "user_mount.unshare", "user_mount.setgroups", "user_mount.uid_map", "user_mount.gid_map", "user_mount.exec_true",
                   "mount.unshare", "mount.setgroups", "mount.uid_map", "mount.gid_map", "mount.private", "mount.tmpfs",
-                  "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount",
+                  "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount", "mount.outside_denied",
                   "net.unshare", "net.setgroups", "net.uid_map", "net.gid_map", "net.unshare_net", "original_unshare")
         runtime = ("version", "run", "delete", "state_absent", "child_reaping", "directory_cleanup")
         report = {"tests": [diag.row("docker", name, "PASS") for name in docker]
@@ -261,7 +358,8 @@ class DiagnosticsTests(unittest.TestCase):
         nested = {"environment": {"apparmor_current": {"status": "PASS", "value": "docker-default (enforce)"}},
                   "tests": [diag.row("docker", "user_mount.unshare", "FAIL", error=OSError(errno.EPERM, "Operation not permitted")),
                             diag.row("gvisor", "run", "FAIL", stderr="namespace: operation not permitted"),
-                            diag.row("gvisor", "delete", "PASS")], "runsc_debug": "diagnostic fixture"}
+                            diag.row("gvisor", "delete", "PASS")], "runsc_debug": "diagnostic fixture",
+                  "runsc_debug_chunks": ["EARLY_GOFER_FAILURE", "diagnostic fixture"]}
 
         def command(argv, *args, **kwargs):
             if str(argv[2]).endswith("scan-image.py"):
@@ -315,6 +413,7 @@ class DiagnosticsTests(unittest.TestCase):
             self.assertEqual(report["nested_outcome"], "FAIL")
             self.assertEqual(report["effective_docker_policy"]["apparmor"], "")
             self.assertEqual(report["started_docker_policy"]["apparmor"], "docker-default")
+            self.assertEqual(report["runsc_debug_chunks"], nested["runsc_debug_chunks"])
             self.assertEqual(next(t["status"] for t in report["tests"] if t["test"] == "apparmor_parity"), "PASS")
         self.assertEqual(calls, ["info", "pull", "image", "create", "inspect", "start", "inspect", "rm"])
         self.assertFalse(assets_path[0].exists())

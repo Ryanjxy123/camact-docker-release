@@ -28,27 +28,61 @@ PROBES = ("user", "user_mount", "mount", "net")
 APPARMOR_PROFILES = ("docker-default", "camact-gvisor-diagnostic-v1")
 CLONE_NEWUSER, CLONE_NEWNS, CLONE_NEWNET = 0x10000000, 0x20000, 0x40000000
 MS_RDONLY, MS_NOSUID, MS_NODEV = 1, 2, 4
+MS_NOEXEC, MS_NOATIME, MS_NODIRATIME = 8, 1024, 2048
+MS_RELATIME, MS_STRICTATIME = 1 << 21, 1 << 24
 MS_REMOUNT, MS_BIND, MS_REC, MS_PRIVATE = 32, 4096, 16384, 1 << 18
+DEBUG_CAPTURE_BYTES, DEBUG_CHUNK_CHARACTERS = 2 * 1024 * 1024, 16000
 LIBC = ctypes.CDLL(None, use_errno=True)
 SAFE_ENV = {"PATH": os.defpath + ":/usr/local/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
             "PYTHONDONTWRITEBYTECODE": "1", "HOME": "/tmp"}
 
 
-def redact(value):
+def redact(value, *, limit=24000):
     """Sanitize before saving OR displaying; raw command output is memory-only."""
     value = str(value)
     value = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value)
     value = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "?", value)
     value = re.sub(r"\b(?:sk-[\w-]{8,}|hf_[\w-]{8,}|gh[pousr]_[\w-]{8,}|github_pat_[\w-]+)", "<redacted>", value)
     value = re.sub(r"(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;\"']+", r"\1<redacted>", value)
-    value = re.sub(r'''(?i)(["']?[\w-]*(?:key|token|password|secret)["']?\s*[=:]\s*)["']?[^\s,;"']+["']?''', r"\1<redacted>", value)
+    value = re.sub(r'''(?i)(?<![\w-])(["']?[\w-]*(?:key|token|password|secret)["']?\s*[=:]\s*)["']?[^\s,;"']+["']?''', r"\1<redacted>", value)
     value = re.sub(r"https?://[^\s\"'<>]+", "<url>", value)
-    value = re.sub(r"/(?:home|Users|root)/[^\s\"'<>:]+", "<home-path>", value)
+    value = re.sub(r"(?<![\w/])/(?:home|Users|root)/[^\s\"'<>:]+", "<home-path>", value)
     value = re.sub(r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<ip>", value)
     # Subprocess errors/debug logs have no reason to expose caller workspace paths.
     if ROOT != Path("/"):
         value = value.replace(str(ROOT), "<project>")
-    return value[-24000:]
+    return value if limit is None else value[-limit:]
+
+
+def capture_runsc_debug(path, chunks):
+    """Keep the sanitized beginning as bounded chunks and the legacy log tail."""
+    with path.open("rb") as stream:
+        raw = stream.read(DEBUG_CAPTURE_BYTES + 1)
+        truncated = len(raw) > DEBUG_CAPTURE_BYTES
+        sanitized = redact(raw[:DEBUG_CAPTURE_BYTES].decode(errors="replace"), limit=None)
+        encoded = sanitized.encode("utf-8")
+        truncated = truncated or len(encoded) > DEBUG_CAPTURE_BYTES
+        sanitized = encoded[:DEBUG_CAPTURE_BYTES].decode("utf-8", errors="ignore")
+        chunks.extend(sanitized[offset:offset + DEBUG_CHUNK_CHARACTERS]
+                      for offset in range(0, len(sanitized), DEBUG_CHUNK_CHARACTERS))
+        # Preserve the old tail interface even when the chunk capture was capped.
+        stream.seek(max(0, path.stat().st_size - 96000))
+        tail = redact(stream.read(96000).decode(errors="replace"))
+    return tail, truncated
+
+
+def readonly_bind_flags(source):
+    """A user namespace cannot clear locked flags inherited from its source."""
+    source_flags = os.statvfs(source).f_flag
+    flags = MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV
+    for stat_name, mount_flag in (("ST_RDONLY", MS_RDONLY), ("ST_NOSUID", MS_NOSUID),
+            ("ST_NODEV", MS_NODEV), ("ST_NOEXEC", MS_NOEXEC), ("ST_NOATIME", MS_NOATIME),
+            ("ST_NODIRATIME", MS_NODIRATIME), ("ST_RELATIME", MS_RELATIME)):
+        if source_flags & getattr(os, stat_name, 0):
+            flags |= mount_flag
+    if not flags & (MS_NOATIME | MS_RELATIME):
+        flags |= MS_STRICTATIME
+    return flags
 
 
 def clean(value):
@@ -151,6 +185,8 @@ def probe(name, work, layer):
                "net": ["net.unshare_net"], "mount": ["mount.private", "mount.tmpfs",
                    "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly",
                    "mount.readonly_enforced", "mount.bind_unmount"]}[name]
+    if name == "mount" and layer == "docker":
+        stages.append("mount.outside_denied")
     tests, stage = [], stages[0]
 
     def step(label, action):
@@ -184,8 +220,15 @@ def probe(name, work, layer):
             step("mount.tmpfs_unmount", lambda: syscall("umount2", os.fsencode(target), 0))
             step("mount.bind", lambda: syscall("mount", os.fsencode(source), os.fsencode(target), None,
                                                 ctypes.c_ulong(MS_BIND | MS_REC), None))
-            step("mount.readonly", lambda: syscall("mount", None, os.fsencode(target), None,
-                ctypes.c_ulong(MS_BIND | MS_REMOUNT | MS_RDONLY | MS_NOSUID | MS_NODEV), None))
+            stage = "mount.readonly"
+            remount_flags = readonly_bind_flags(source)
+            step(stage, lambda: syscall("mount", None, os.fsencode(target), None,
+                                       ctypes.c_ulong(remount_flags), None))
+            tests[-1]["mount_flags"] = [label for label, flag in (("ro", MS_RDONLY),
+                ("nosuid", MS_NOSUID), ("nodev", MS_NODEV), ("noexec", MS_NOEXEC),
+                ("remount", MS_REMOUNT), ("bind", MS_BIND), ("noatime", MS_NOATIME),
+                ("nodiratime", MS_NODIRATIME), ("relatime", MS_RELATIME), ("strictatime", MS_STRICTATIME))
+                if remount_flags & flag]
 
             def readonly():
                 try:
@@ -197,6 +240,23 @@ def probe(name, work, layer):
                 raise OSError(errno.EIO, "read-only bind allowed a write")
             step("mount.readonly_enforced", readonly)
             step("mount.bind_unmount", lambda: syscall("umount2", os.fsencode(target), 0))
+            if layer == "docker":
+                def outside_denied():
+                    outside = work / "outside"
+                    outside.mkdir()
+                    try:
+                        syscall("mount", b"tmpfs", os.fsencode(outside), b"tmpfs",
+                                ctypes.c_ulong(MS_NOSUID | MS_NODEV), b"size=1048576,mode=0700")
+                    except OSError as exc:
+                        if exc.errno == errno.EACCES:
+                            return
+                        raise
+                    # An unexpected successful mount must still be removed.
+                    syscall("umount2", os.fsencode(outside), 0)
+                    raise OSError(errno.EIO, "AppArmor allowed mount outside the approved target")
+                step("mount.outside_denied", outside_denied)
+                tests[-1].update(expected_errno="EACCES", observed_errno="EACCES",
+                                 detail="Legal mounts passed; out-of-policy tmpfs mount denied with EACCES")
     except OSError as exc:
         tests.append(row(layer, stage, "FAIL", error=exc))
         for pending in stages[stages.index(stage) + 1:]:
@@ -242,7 +302,9 @@ def production_flags():
     raise ValueError("Production runsc prefix missing")
 
 
-def gvisor_tests(work, runsc, flags, version):
+def gvisor_tests(work, runsc, flags, version, debug_chunks=None):
+    if debug_chunks is None:
+        debug_chunks = []
     tests = []
     result = command([runsc, "--version"])
     item = command_row("gvisor", "version", result)
@@ -306,7 +368,11 @@ def gvisor_tests(work, runsc, flags, version):
             tests.append(row("gvisor", "child_reaping", "FAIL", detail="Detached child did not exit within 3s"))
         try:
             if debug.is_file():
-                debug_text = redact(debug.read_text(errors="replace"))
+                debug_text, truncated = capture_runsc_debug(debug, debug_chunks)
+                tests.append(row("gvisor", "debug_capture", "SKIP" if truncated else "PASS",
+                    detail="Sanitized debug chunks truncated at 2 MiB; legacy tail retained" if truncated
+                    else "Complete sanitized debug retained in chunks; legacy tail retained",
+                    truncated=truncated, captured_bytes=sum(len(chunk.encode("utf-8")) for chunk in debug_chunks)))
             if any(t["status"] != "PASS" for t in tests if t["test"] in ("delete", "state_absent", "child_reaping")):
                 tests.append(row("gvisor", "directory_cleanup", "SKIP", detail="Runtime cleanup not verified; Docker removal will contain remaining processes"))
             else:
@@ -326,7 +392,7 @@ def inside(assets):
                and int(ps.get("CapBnd", "1"), 16) == 0)
     tests = [row("docker", "process_policy", "PASS" if matches else "FAIL",
                  detail="UID/GID=10001, CapEff=CapBnd=0, NoNewPrivs=1, Seccomp=2")]
-    debug = ""
+    debug, debug_chunks = "", []
     stage = "namespace_collector"
     try:
         with tempfile.TemporaryDirectory(prefix="camact-diag-") as directory:
@@ -335,11 +401,12 @@ def inside(assets):
         state_parent = Path("/var/lib/camact/scratch/gvisor")
         state_parent.mkdir(parents=True, mode=0o700)
         stage = "runtime_collector"
-        gvisor, debug = gvisor_tests(state_parent, assets / "gvisor/runsc", metadata["flags"], metadata["version"])
+        gvisor, debug = gvisor_tests(state_parent, assets / "gvisor/runsc", metadata["flags"], metadata["version"], debug_chunks)
         tests += gvisor
     except Exception as exc:
         tests.append(row("gvisor", stage, "FAIL", error=exc, stderr=str(exc), detail=type(exc).__name__))
-    print(json.dumps(clean({"environment": observed, "tests": tests, "runsc_debug": debug})))
+    print(json.dumps(clean({"environment": observed, "tests": tests, "runsc_debug": debug,
+                           "runsc_debug_chunks": debug_chunks})))
 
 
 def download_gvisor(assets, entry):
@@ -492,7 +559,8 @@ def summarize(report):
     for probe_name in PROBES:
         nested_required.update(("docker", probe_name + "." + name) for name in ("unshare", "setgroups", "uid_map", "gid_map"))
     nested_required.update(("docker", name) for name in ("user_mount.exec_true", "net.unshare_net", "mount.private", "mount.tmpfs",
-        "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount"))
+        "mount.tmpfs_write", "mount.tmpfs_unmount", "mount.bind", "mount.readonly", "mount.readonly_enforced", "mount.bind_unmount",
+        "mount.outside_denied"))
     nested_required.update(("gvisor", name) for name in ("version", "run", "delete", "state_absent", "child_reaping", "directory_cleanup"))
     nested = [t for t in required if t["layer"] in ("docker", "gvisor")]
     passed = {(t["layer"], t["test"]) for t in nested if t["status"] == "PASS"}
@@ -525,7 +593,7 @@ def diagnose(output, apparmor_profile="docker-default"):
         raise ValueError("Unsupported diagnostic AppArmor profile")
     output.mkdir(parents=True, exist_ok=True)
     report = {"schema": "camact.gvisor.diagnostics.v1", "tests": [], "environments": {},
-              "runsc_debug": "", "audit_events": [], "scope": "diagnostic_only",
+              "runsc_debug": "", "runsc_debug_chunks": [], "audit_events": [], "scope": "diagnostic_only",
               "expected_apparmor": apparmor_profile,
               "apparmor_scope": "production_default" if apparmor_profile == "docker-default" else "diagnostic_candidate_only"}
     tests = report["tests"]
@@ -619,6 +687,7 @@ def diagnose(output, apparmor_profile="docker-default"):
         nested = json.loads(result["stdout"])
         report["environments"]["docker"] = nested["environment"]
         report["runsc_debug"] = nested["runsc_debug"]
+        report["runsc_debug_chunks"] = nested.get("runsc_debug_chunks", [])
         tests += nested["tests"]
         stage = "docker.started_policy"
         item, started_actual = inspect_policy(name, apparmor_profile, started=True)
