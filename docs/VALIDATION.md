@@ -2,7 +2,25 @@
 
 验收日期：2026-10-28。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待本轮修复后的完整 Docker Actions 验收。
 
-## 本轮 Actions 故障修复
+## Run #3 镜像归档清单修复（本轮）
+
+失败记录为 [Run #3 / `40679929807`](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40679929807)，源码为 `020c4417ca9695c6333366e1e2a7ef0940c2ae2b`。实际诊断 artifact 确认：扫描已读取 106,300 个文件、3,299,979,110 字节，随后以 `ScanFailure: undeclared_image_layer` 失败，阶段为 `image-security-scan`。构建、146 项离线测试和运行时检查成功，GHCR 步骤跳过。原始 `docker save` 归档及集合差集没有保留，因此不能恢复该次运行中额外 Blob 的具体名称和数量。
+
+核对 [Moby v28.5.1 官方导出器](https://github.com/moby/moby/blob/v28.5.1/image/tarexport/save.go) 后，确认 `saveImage` / `saveConfigAndLayer` / `saveConfig` 会为每层写出兼容旧版 Docker 的 V1 配置 JSON，存入 `blobs/sha256/<内容摘要>`。这些配置不在 Docker `manifest.json` 的 Config/Layers 或 OCI descriptor 引用集合中。原校验将所有剩余 Blob 都计为层，因此合法 V1 配置进入 `actual - declared`，触发当前错误；这与可达 OCI manifest/index 元数据及真正未引用的层是不同类别。按官方格式构造的同一归档，已验证原源码失败、修复后通过。
+
+另实际调用未经修改的官方 `tarexport.NewTarExporter.Save`，使用内存中的两层合成存储生成归档，独立验证序列化兼容性：清单外恰好有两个 V1 配置 Blob，其他文件分别为声明的镜像配置/层、可达 OCI manifest、index/layout 和 repositories 元数据。UTC、Asia/Shanghai 及 Created 为空的四种组合均验证旧源码失败、修复后通过；本机时区的 Unix 零时刻可表示为 `1970-01-01T08:00:00+08:00`，按实际时刻验证并保留原文参与 ID 校验。这是官方导出器测试，未使用 Docker daemon 或真实容器，也不是 Run #3 原归档。
+
+本轮只修改扫描器、其回归测试及本文档：
+
+- 对额外 Blob 逐一验证 V1 字段、类型和内容 SHA-256，再按 Moby `v1.CreateID` 算法验证配置 ID、父配置和声明的 rootfs DiffID/ChainID，只有完整匹配的层链才认作遗留配置。保留 Go 对嵌套字段顺序、HTML 和 Unicode 的序列化行为。
+- 所有接受的 V1 配置同时扫描原始 JSON 和解码内容，转义不能遮蔽凭据；所有声明层、历史层及现有敏感文件/密钥规则继续执行。任意额外 JSON、未引用层/Blob、错误摘要、错误 ID/父链及不完整链继续拒绝，没有扩大例外策略。
+- 清单失败保留固定错误码，并增加 `layer-inventory` 阶段、actual/declared 数量、元数据分类和最多十个额外路径的 SHA-256；不输出候选值或未过滤的路径。现有 Shell 阶段诊断和失败阻断保持有效。
+
+验证：使用现有 Python 3.13.11 干净依赖环境，原有 **146 项**全部通过；新增 5 项回归后完整 **151 项**通过，零失败/错误/跳过，其中 **23 项镜像扫描测试**和 **2 项 Shell 门禁测试**通过。新增用例覆盖单层/多层 Moby 格式、历史层和遗留配置中的凭据、脱敏、签名有效但字段异常的配置、断裂层链、损坏摘要、额外 JSON/层/Blob 及有界清单诊断。源码扫描通过。后续入口复核未发现与本问题直接相关、需要修改的其他缺陷。
+
+本轮证据在本地忽略目录 `.validation/run3-layer-inventory/`。未在宿主构建或运行真实 Docker 容器；最终镜像扫描、Compose 实际挂载/UID/Secrets、容器内 gVisor 和六套 Harness（含五套 CLI 的 15 项矩阵）、HF 缓存及跨容器持久化仍需完整 Docker 验收。可以在 main 手动使用 `version=0.1.0-rc.1`、`publish=false` 重跑 Actions；本轮不触发 Actions、不发布 GHCR、不运行正式 Benchmark 或调用付费模型。Dockerfile、运行时/CLI 安装、Compose、Harness 和评分实现均不在修改范围。
+
+## 前次 Actions 故障修复（历史）
 
 失败记录为 Actions Run `40662252249`，对应源码 `cad056266e25db75d609a334cd7ce3af34ece37e`。GitHub API 确认构建、离线测试和运行时检查成功，集成步骤失败；公开 annotation 仅有 `exit code 1`，历史扫描 JSON 未被保留，不能确认历史运行首先命中了哪条规则。
 

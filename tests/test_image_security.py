@@ -94,6 +94,94 @@ def oci_archive(*, dirty=False, extra_blob=False, secret_metadata=False, corrupt
     return tar_payload(entries)
 
 
+def moby_archive(*, dirty_layer=False, secret_legacy=False, secret_history=False,
+                 legacy_mutation=None, config_mutation=None, single_layer=False,
+                 intermediate_created="1970-01-01T00:00:00Z", extra_members=()):
+    """Model Moby v28.5.1 image/tarexport/save.go's hybrid Docker/OCI export.
+
+    saveConfig writes one unreferenced V1 JSON blob per diff ID. CreateID
+    hashes sorted top-level RawMessages while retaining nested struct order.
+    """
+    def go_json(value):
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return (encoded.replace("&", "\\u0026").replace("<", "\\u003c")
+                .replace(">", "\\u003e").replace("\u2028", "\\u2028")
+                .replace("\u2029", "\\u2029")).encode()
+
+    # Mandatory fields in the zero-valued Docker container.Config struct,
+    # in the order emitted by Go's encoding/json (optional fields are absent).
+    container_config = {"Hostname": "", "Domainname": "", "User": "", "AttachStdin": False,
+                        "AttachStdout": False, "AttachStderr": False, "Tty": False,
+                        "OpenStdin": False, "StdinOnce": False, "Env": None, "Cmd": None,
+                        "Image": "", "Volumes": None, "WorkingDir": "", "Entrypoint": None,
+                        "OnBuild": None, "Labels": None}
+    first = tar_payload([("opt/camact/old.txt", SYNTHETIC_KEY.encode() if dirty_layer else b"safe")])
+    second = tar_payload([("opt/camact/.wh.old.txt", b"")])
+    layers = [first] if single_layer else [first, second]
+    diff_ids = ["sha256:" + hashlib.sha256(raw).hexdigest() for raw in layers]
+    config = {"created": "2026-10-28T00:00:00Z", "container_config": container_config,
+              "config": {"Env": ["SAFE=1"], "Labels": {"org.example.note": "<>& 中文\u2028\u2029"}},
+              "architecture": "amd64", "os": "linux",
+              "rootfs": {"type": "layers", "diff_ids": diff_ids},
+              "history": [{"created_by": "COPY old.txt /opt/camact/old.txt"},
+                          {"created_by": "RUN rm /opt/camact/old.txt"}]}
+    if secret_history:
+        config["history"][0]["created_by"] = "RUN export SERVICE_API_KEY=" + SYNTHETIC_KEY
+    config["history"] = config["history"][:len(layers)]
+    legacy = []
+    parent = ""
+    chain_id = ""
+    for index, diff_id in enumerate(diff_ids):
+        chain_id = diff_id if index == 0 else "sha256:" + hashlib.sha256(
+            (chain_id + " " + diff_id).encode()).hexdigest()
+        original = ({"created": intermediate_created, "container_config": container_config}
+                    if index < len(diff_ids) - 1 else {key: value for key, value in config.items()
+                                                      if key not in {"rootfs", "history"}})
+        if secret_legacy and index == len(diff_ids) - 1:
+            # Historical V1 metadata can hold credentials absent from the final config.
+            original["container_config"] = dict(container_config, Env=["SERVICE_API_KEY=" + SYNTHETIC_KEY])
+        identity = dict(original, layer_id=chain_id)
+        if parent:
+            identity["parent"] = "sha256:" + parent
+        legacy_id = hashlib.sha256(go_json(dict(sorted(identity.items())))).hexdigest()
+        value = {"id": legacy_id}
+        if parent:
+            value["parent"] = parent
+        value.update(original)
+        value["os"] = config["os"]  # Moby sets this after CreateID on intermediate configs.
+        legacy.append(value)
+        parent = legacy_id
+
+    if legacy_mutation is not None:
+        legacy_mutation(legacy, chain_id)
+    if config_mutation is not None:
+        config_mutation(config)
+
+    def descriptor(raw, media_type):
+        return {"mediaType": media_type, "digest": "sha256:" + hashlib.sha256(raw).hexdigest(), "size": len(raw)}
+
+    def blob_name(item):
+        return "blobs/sha256/" + item["digest"].split(":", 1)[1]
+
+    config_raw = go_json(config)
+    cfg = descriptor(config_raw, "application/vnd.oci.image.config.v1+json")
+    layer_descriptors = [descriptor(raw, "application/vnd.oci.image.layer.v1.tar") for raw in layers]
+    manifest_raw = go_json({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                            "config": cfg, "layers": layer_descriptors})
+    image = descriptor(manifest_raw, "application/vnd.oci.image.manifest.v1+json")
+    entries = [("manifest.json", go_json([{"Config": blob_name(cfg), "RepoTags": ["camact:test"],
+                                         "Layers": [blob_name(item) for item in layer_descriptors]}])),
+               ("index.json", go_json({"schemaVersion": 2, "manifests": [image]})),
+               ("oci-layout", b'{"imageLayoutVersion":"1.0.0"}'),
+               (blob_name(cfg), config_raw), (blob_name(image), manifest_raw)]
+    entries.extend((blob_name(item), raw) for item, raw in zip(layer_descriptors, layers))
+    for value in legacy:
+        raw = go_json(value)
+        entries.append(("blobs/sha256/" + hashlib.sha256(raw).hexdigest(), raw))
+    entries.extend(extra_members)
+    return tar_payload(entries)
+
+
 class ImageSecurityScannerTests(unittest.TestCase):
     def test_clean_binary_tool_archive_passes(self):
         code, result = run_scan(image_archive())
@@ -221,6 +309,152 @@ class ImageSecurityScannerTests(unittest.TestCase):
                 self.assertNotEqual(code, 0)
                 self.assertEqual(result["issues"][0]["kind"], "scan_failed")
                 self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+
+    def test_moby_legacy_configs_bound_to_declared_layer_chain_pass(self):
+        for single_layer, created in ((False, "1970-01-01T00:00:00Z"),
+                                      (True, "1970-01-01T00:00:00Z"),
+                                      (False, "1970-01-01T08:00:00+08:00")):
+            with self.subTest(single_layer=single_layer, intermediate_created=created):
+                code, result = run_scan(moby_archive(single_layer=single_layer, intermediate_created=created))
+                self.assertEqual(code, 0, result)
+                self.assertEqual(result["files_scanned"], 1 if single_layer else 2)
+                self.assertEqual(result["issue_count"], 0)
+
+    def test_moby_layers_history_and_legacy_metadata_keep_secret_detection(self):
+        for option, location in (("dirty_layer", "layer[0]:"), ("secret_history", "config[0]"),
+                                 ("secret_legacy", "blobs/sha256/")):
+            with self.subTest(option=option):
+                code, result = run_scan(moby_archive(**{option: True}))
+                self.assertNotEqual(code, 0)
+                self.assertTrue(any(item["kind"] == "provider_key" and item["file"].startswith(location)
+                                    for item in result["issues"]), result)
+                self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+                self.assertEqual(result["files_scanned"], 2)
+        with self.subTest(option="JSON-escaped legacy secret"):
+            with tarfile.open(fileobj=io.BytesIO(moby_archive(secret_legacy=True))) as archive:
+                entries = [(member.name, archive.extractfile(member).read()) for member in archive if member.isfile()]
+            assignment = "SERVICE_API_KEY=" + SYNTHETIC_KEY
+            escaped = "".join("\\u%04x" % ord(character) for character in assignment).encode()
+            raw = entries[-1][1].replace(assignment.encode(), escaped)
+            self.assertNotEqual(raw, entries[-1][1])
+            entries[-1] = ("blobs/sha256/" + hashlib.sha256(raw).hexdigest(), raw)
+            code, result = run_scan(tar_payload(entries))
+            self.assertNotEqual(code, 0)
+            self.assertTrue(any(item["kind"] == "provider_key" and item["file"].startswith("blobs/sha256/")
+                                for item in result["issues"]), result)
+            self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+            self.assertEqual(result["files_scanned"], 2)
+        with tarfile.open(fileobj=io.BytesIO(moby_archive())) as archive:
+            clean_entries = [(member.name, archive.extractfile(member).read()) for member in archive if member.isfile()]
+        raw = clean_entries[-1][1]
+        duplicates = {
+            "top-level key": b'{"container_config":{"Env":["' + escaped + b'"]},' + raw[1:],
+            "nested key": raw.replace(b'"Env":null', b'"Env":["' + escaped + b'"],"Env":null', 1),
+        }
+        for kind, duplicate in duplicates.items():
+            with self.subTest(option="duplicate JSON " + kind):
+                entries = clean_entries[:-1] + [("blobs/sha256/" + hashlib.sha256(duplicate).hexdigest(), duplicate)]
+                code, result = run_scan(tar_payload(entries))
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["issues"][0]["reason"], "undeclared_image_layer", result)
+                self.assertEqual(result["issues"][0]["stage"], "layer-inventory")
+                self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+
+    def test_invalid_or_incomplete_moby_legacy_chains_fail_closed(self):
+        def malformed_field(key, item):
+            def mutate(values, chain_id):
+                value = values[-1]
+                value[key] = item
+                identity = {key: item for key, item in value.items() if key not in {"id", "parent"}}
+                identity.update(layer_id=chain_id, parent="sha256:" + value["parent"])
+                encoded = json.dumps(dict(sorted(identity.items())), ensure_ascii=False, separators=(",", ":"))
+                for character in "<>&\u2028\u2029":
+                    encoded = encoded.replace(character, "\\u" + format(ord(character), "04x"))
+                value["id"] = hashlib.sha256(encoded.encode()).hexdigest()
+            return mutate
+
+        mutations = {
+            "wrong id": lambda values, _: values[-1].update(id="0" * 64),
+            "wrong parent": lambda values, _: values[-1].update(parent="0" * 64),
+            "unknown field": malformed_field("unexpected", "fixture"),
+            "incomplete chain": lambda values, _: values.pop(),
+            "wrong intermediate OS": lambda values, _: values[0].update(os="unexpected-os"),
+            "invalid config type": malformed_field("config", []),
+            "invalid container config type": malformed_field("container_config", []),
+            "invalid created type": malformed_field("created", {}),
+            "invalid Size type": malformed_field("Size", True),
+            "invalid author type": malformed_field("author", []),
+            "non-JSON NaN": malformed_field("config", {"Healthcheck": {"Interval": float("nan")}}),
+            "non-JSON Infinity": malformed_field("config", {"Healthcheck": {"Interval": float("inf")}}),
+        }
+        for name, mutation in mutations.items():
+            with self.subTest(name=name):
+                code, result = run_scan(moby_archive(legacy_mutation=mutation))
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["issues"][0]["reason"], "undeclared_image_layer", result)
+                self.assertGreater(result["issues"][0]["inventory"]["unreferenced_blobs"], 0)
+        rootfs_mutations = {
+            "missing rootfs": lambda config: config.pop("rootfs"),
+            "invalid rootfs type": lambda config: config.update(rootfs=[]),
+            "unsupported rootfs format": lambda config: config["rootfs"].update(type="unexpected"),
+            "invalid diff IDs type": lambda config: config["rootfs"].update(diff_ids="invalid"),
+            "wrong layer count": lambda config: config["rootfs"]["diff_ids"].pop(),
+            "invalid diff ID": lambda config: config["rootfs"]["diff_ids"].__setitem__(0, "sha256:invalid"),
+            "unrelated diff ID": lambda config: config["rootfs"]["diff_ids"].__setitem__(0, "sha256:" + "0" * 64),
+        }
+        for name, mutation in rootfs_mutations.items():
+            with self.subTest(name=name):
+                code, result = run_scan(moby_archive(config_mutation=mutation))
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["issues"][0]["reason"], "undeclared_image_layer", result)
+        for created in ("1970-01-01T00:00:01Z", "1970-01-01T00:00:00"):
+            with self.subTest(intermediate_created=created):
+                code, result = run_scan(moby_archive(intermediate_created=created))
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["issues"][0]["reason"], "undeclared_image_layer", result)
+
+    def test_moby_legacy_blob_digest_is_verified(self):
+        with tarfile.open(fileobj=io.BytesIO(moby_archive())) as archive:
+            entries = [(member.name, archive.extractfile(member).read()) for member in archive if member.isfile()]
+        name, raw = entries[-1]
+        entries[-1] = ("blobs/sha256/" + "0" * 64, raw)
+        self.assertNotEqual(name, entries[-1][0])
+        code, result = run_scan(tar_payload(entries))
+        self.assertNotEqual(code, 0)
+        self.assertEqual(result["issues"][0]["reason"], "legacy_config_digest_mismatch", result)
+
+    def test_moby_unreferenced_json_layers_and_blobs_fail_with_safe_inventory(self):
+        extras = [("hidden.tar", tar_payload([("hidden", SYNTHETIC_KEY.encode())])),
+                  ("blobs/sha256/" + "a" * 64, b'{"unexpected":"metadata"}'),
+                  ("blobs/sha256/" + "b" * 64, b"opaque-orphan-blob")]
+        for extra in extras:
+            with self.subTest(path=extra[0]):
+                code, result = run_scan(moby_archive(extra_members=[extra]))
+                self.assertNotEqual(code, 0)
+                self.assertEqual(result["issues"][0]["reason"], "undeclared_image_layer", result)
+                self.assertEqual(result["issues"][0]["inventory"]["actual_layers"], 3)
+        for index in range(12):
+            extras.append(("blobs/sha256/" + SYNTHETIC_KEY + str(index), b'{"note":"fixture-private-value"}'))
+        code, result = run_scan(moby_archive(extra_members=extras))
+        self.assertNotEqual(code, 0)
+        failure = result["issues"][0]
+        self.assertEqual(failure["reason"], "undeclared_image_layer", result)
+        self.assertEqual(failure["stage"], "layer-inventory")
+        self.assertEqual(failure["error_type"], "ScanFailure")
+        inventory = failure["inventory"]
+        self.assertEqual(inventory["declared_layers"], 2)
+        self.assertEqual(inventory["legacy_config_blobs"], 2)
+        self.assertEqual(inventory["unreferenced_blobs"], 14)
+        self.assertEqual(inventory["unexpected_tar_members"], 1)
+        self.assertEqual(inventory["actual_layers"], 17)
+        self.assertEqual(inventory["missing_from_inventory"], 0)
+        self.assertEqual(len(inventory["unexpected_path_sha256"]), 10)
+        expected_hashes = [hashlib.sha256(name.encode()).hexdigest() for name, _ in sorted(extras)[:10]]
+        self.assertEqual(inventory["unexpected_path_sha256"], expected_hashes)
+        for path, _ in extras:
+            self.assertNotIn(path, json.dumps(inventory))
+        self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+        self.assertNotIn("fixture-private-value", json.dumps(result))
 
     def test_only_valid_public_certificates_qualify_for_pem_paths(self):
         certificates = ssl.create_default_context().get_ca_certs(binary_form=True)

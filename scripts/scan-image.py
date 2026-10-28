@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import bz2
+import datetime
 import gzip
 import hashlib
 import importlib.util
@@ -51,11 +52,12 @@ _spec.loader.exec_module(_release_scanner)
 class ScanFailure(Exception):
     """Only fixed diagnostic codes and archive locations may be reported."""
 
-    def __init__(self, reason, location="<archive>", exit_code=None):
+    def __init__(self, reason, location="<archive>", exit_code=None, inventory=None):
         super().__init__(reason)
         self.reason = reason.replace(" ", "_")
         self.location = location
         self.exit_code = exit_code
+        self.inventory = inventory
 
 
 def add_issue(issues, location, kind, candidate=None):
@@ -360,11 +362,12 @@ def scan_layer_archive(source, label, issues, exceptions, stats, context):
         raise ScanFailure("layer decompression failed", label) from None
 
 
-def validate_layer_inventory(outer, members, declared, configs, issues):
+def validate_layer_inventory(outer, members, declared, configs, issues, image_configs):
     """Cover classic Docker layers and OCI blobs, including OCI metadata.
 
-    Only descriptors reachable from index.json can account for extra JSON
-    blobs. An unreferenced layer/blob still fails closed.
+    Moby also exports legacy V1 configs outside the OCI descriptor graph.
+    Account for those only when their IDs bind a complete declared layer chain;
+    arbitrary unreferenced JSON and layer blobs still fail closed.
     """
     blobs = {name for name, member in members.items()
              if member.isfile() and name.startswith("blobs/")}
@@ -411,10 +414,107 @@ def validate_layer_inventory(outer, members, declared, configs, issues):
             raise ScanFailure("invalid OCI index")
         for descriptor in index["manifests"]:
             visit(descriptor)
+
+    def unique_fields(pairs):
+        value = dict(pairs)
+        if len(value) != len(pairs):
+            raise ValueError("duplicate JSON field")
+        return value
+
+    def invalid_constant(_value):
+        raise ValueError("non-finite JSON number")
+
+    legacy = {}
+    v1_fields = {"id", "parent", "comment", "created", "container", "container_config",
+                 "docker_version", "author", "config", "architecture", "variant", "os", "Size"}
+    for name in sorted(blobs - configs - metadata):
+        member = members[name]
+        if member.size > 4 * CHUNK_SIZE:
+            continue
+        raw = outer.extractfile(member).read()
+        try:
+            value = json.loads(raw, object_pairs_hook=unique_fields, parse_constant=invalid_constant)
+        except (ValueError, UnicodeError):
+            continue
+        if (not isinstance(value, dict) or not set(value) <= v1_fields
+                or not isinstance(value.get("id"), str)
+                or not re.fullmatch(r"[a-f0-9]{64}", value["id"])
+                or "created" not in value or not isinstance(value.get("container_config"), dict)
+                or value["created"] is not None and not isinstance(value["created"], str)
+                or "config" in value and not isinstance(value["config"], dict)
+                or "Size" in value and type(value["Size"]) is not int
+                or any(not isinstance(value[key], str)
+                       for key in set(value) - {"created", "container_config", "config", "Size"})):
+            continue
+        if name != "blobs/sha256/" + hashlib.sha256(raw).hexdigest():
+            raise ScanFailure("legacy config digest mismatch", name)
+        # These configs can contain Env, Cmd and other historical credentials.
+        scan_text(raw.decode("utf-8"), name, issues, metadata=True)
+        scan_text(json.dumps(value, ensure_ascii=False), name, issues, metadata=True)
+        legacy[name] = value
+
+    legacy_configs = set()
+    for config, layer_count in image_configs:
+        rootfs = config.get("rootfs")
+        diff_ids = rootfs.get("diff_ids") if isinstance(rootfs, dict) else None
+        if (not isinstance(rootfs, dict) or rootfs.get("type") != "layers"
+                or not isinstance(diff_ids, list) or len(diff_ids) != layer_count or not diff_ids
+                or any(not isinstance(item, str) or not re.fullmatch(r"sha256:[a-f0-9]{64}", item)
+                       for item in diff_ids)):
+            continue
+        chain_id = ""
+        parent = ""
+        chain_configs = set()
+        for index, diff_id in enumerate(diff_ids):
+            chain_id = diff_id if not chain_id else "sha256:" + hashlib.sha256(
+                (chain_id + " " + diff_id).encode()).hexdigest()
+            matches = []
+            for name, value in legacy.items():
+                if value.get("parent", "") != parent or value.get("os") != config.get("os"):
+                    continue
+                identity = {key: item for key, item in value.items() if key not in {"id", "parent"}}
+                if index < len(diff_ids) - 1:
+                    if set(identity) != {"created", "container_config", "os"}:
+                        continue
+                    try:
+                        created = datetime.datetime.fromisoformat(identity["created"])
+                        if created.utcoffset() is None or created.timestamp() != 0:
+                            continue
+                    except (TypeError, ValueError, OverflowError, OSError):
+                        continue
+                    # saveImage sets OS only AFTER v1.CreateID on intermediate configs.
+                    del identity["os"]
+                identity["layer_id"] = chain_id
+                if parent:
+                    identity["parent"] = "sha256:" + parent
+                # Moby v1.CreateID sorts top-level RawMessage keys only. Preserve
+                # nested container.Config field order and Go's HTML escaping.
+                encoded = json.dumps(dict(sorted(identity.items())), ensure_ascii=False,
+                                     separators=(",", ":"))
+                for character in "<>&\u2028\u2029":
+                    encoded = encoded.replace(character, "\\u" + format(ord(character), "04x"))
+                if hashlib.sha256(encoded.encode()).hexdigest() == value["id"]:
+                    matches.append(name)
+            if len(matches) != 1:
+                break
+            name = matches[0]
+            chain_configs.add(name)
+            parent = legacy[name]["id"]
+        else:
+            legacy_configs.update(chain_configs)
+
     actual = {name for name, member in members.items() if member.isfile() and name.endswith(".tar")}
-    actual |= blobs - configs - metadata
+    actual |= blobs - configs - metadata - legacy_configs
     if actual != declared:
-        raise ScanFailure("undeclared image layer")
+        unexpected = actual - declared
+        inventory = {"declared_layers": len(declared), "actual_layers": len(actual),
+                     "oci_metadata_blobs": len(metadata), "legacy_config_blobs": len(legacy_configs),
+                     "unreferenced_blobs": len(unexpected & blobs),
+                     "unexpected_tar_members": sum(name.endswith(".tar") for name in unexpected),
+                     "missing_from_inventory": len(declared - actual),
+                     "unexpected_path_sha256": [hashlib.sha256(name.encode()).hexdigest()
+                                                for name in sorted(unexpected)[:10]]}
+        raise ScanFailure("undeclared image layer", "<layer-inventory>", inventory=inventory)
 
 
 def scan_archive_bytes(source, exceptions=None, stats=None):
@@ -446,6 +546,7 @@ def scan_archive_bytes(source, exceptions=None, stats=None):
         raise ScanFailure("invalid or missing manifest")
     declared = set()
     configs = set()
+    image_configs = []
     for index, image in enumerate(manifest):
         if not isinstance(image, dict) or not isinstance(image.get("Config"), str) or not isinstance(image.get("Layers"), list):
             raise ScanFailure("invalid manifest entry")
@@ -467,6 +568,7 @@ def scan_archive_bytes(source, exceptions=None, stats=None):
             raise ScanFailure("image config section is missing")
         if not isinstance(config.get("history"), list):
             raise ScanFailure("image history is missing")
+        image_configs.append((config, len(image["Layers"])))
         cfg = config["config"]
         for field in ("Env", "Cmd", "Entrypoint"):
             value = cfg.get(field)
@@ -499,7 +601,7 @@ def scan_archive_bytes(source, exceptions=None, stats=None):
                 raise ScanFailure("missing image layer", "manifest[" + str(index) + "].Layers[" + str(number) + "]")
             layer = outer.extractfile(layer_member)
             scan_layer_archive(layer, "layer[" + str(number) + "]", issues, exceptions, stats, context)
-    validate_layer_inventory(outer, members, declared, configs, issues)
+    validate_layer_inventory(outer, members, declared, configs, issues, image_configs)
     check_certificate_links(context, issues, stats)
     outer.close()
     return issues
@@ -562,6 +664,9 @@ def main(argv=None):
                    "reason": exc.reason if isinstance(exc, ScanFailure) else "archive_read_or_parse_failed"}
         if isinstance(exc, ScanFailure) and exc.exit_code is not None:
             failure["exit_code"] = exc.exit_code
+        if isinstance(exc, ScanFailure) and exc.inventory is not None:
+            failure["stage"] = "layer-inventory"
+            failure["inventory"] = exc.inventory
         print(json.dumps({"scope": "docker-image", "issues": [failure],
                           "issue_count": 1, "result": "FAIL", "candidate_values_printed": False, **stats},
                          ensure_ascii=False, indent=2))
