@@ -1,6 +1,41 @@
 # 发布验收记录
 
-验收日期：2026-10-28。源码上传结论：**READY_TO_PUSH**。镜像发布结论：**NOT_READY_TO_PUBLISH**。
+验收日期：2026-10-28。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待本轮修复后的完整 Docker Actions 验收。
+
+## 本轮 Actions 故障修复
+
+失败记录为 Actions Run `40662252249`，对应源码 `cad056266e25db75d609a334cd7ce3af34ece37e`。GitHub API 确认构建、离线测试和运行时检查成功，集成步骤失败；公开 annotation 仅有 `exit code 1`，历史扫描 JSON 未被保留，不能确认历史运行首先命中了哪条规则。
+
+当前源码和固定官方制品已复现以下阻塞，并实施修复：
+
+- `verify-docker.sh` 原先将扫描 JSON 重定向到本地文件，随后由 `set -e` 直接退出。现在使用保留 `pipefail` 的 `tee` 输出脱敏 JSON，并为初始化、扫描、HF 缓存、gVisor、各 Harness/模式及持久化检查报告阶段、行号和退出码。归档/解压错误保留错误类型、固定原因码和位置；不打印候选值或原始 Docker stderr。
+- 扫描器原先拒绝官方 Debian 层的 `./` 根目录记录，以及仅含目录/符号链接的合法层。现在接受这些合法结构，继续拒绝路径穿越、缺失/损坏层和未声明层。也支持 Moby/containerd 导出的 OCI blob 布局及压缩层，并扫描其引用的 OCI 元数据。
+- 官方 Node 24.14.0 命中公开编译路径和 llhttp Token 常量。重新核对官方 `SHASUMS256.txt`、锁定归档及安装二进制摘要后，扩展核验了 npm、Python wheels 和固定基础镜像中的同类公开源码/文档/编译路径命中。
+- `locks/image-scan-exceptions.json` 只批准明确路径、完整文件 SHA-256 和具体命中指纹的组合，并记录公开归档 URL、锁定校验值、归档成员和审查说明。加载时校验来源与当前 Dockerfile/依赖锁一致；变化必须重新审查。所有文件仍读取和扫描，额外文件、内容变化、元数据凭据及未批准命中继续失败。同一路径可记录不同镜像层中分别认证过的版本。
+- 公共 CA 的 `.pem` 后缀原先也会被当作凭据路径。现在完整解析纯公共 X.509 证书，并验证标准 CA 符号链接的实际公共证书目标；私有配置目录、无效证书及附加内容仍不能通过。带上游注释头的固定 CA bundle 使用逐文件哈希记录。
+- 镜像归档和层内容按块读取，避免同时保存整个镜像及全部层的内存副本。pip 26.2.2 增加独立哈希锁；安装使用 `--no-compile`，避免生成带构建时间的字节码缓存，依赖版本和业务行为保持一致。
+
+Actions 使用 `always()` 保存 `docker-verification-diagnostics` artifact，保留 7 天。文件仅为 `image-security-scan.json` 和 `verification-summary.json`；原始 inspect、日志、配置、凭据、Benchmark 和执行产物不在上传范围内。扫描或集成失败仍会阻止 GHCR 登录和发布。Workflow 仍只有手动入口，普通 Push 不会触发 Actions。
+
+本轮验证结果：
+
+| 检查 | 实际结果与范围 |
+|---|---|
+| 原有离线测试 | 131 项通过，零失败/错误/跳过 |
+| 新环境与完整离线测试 | Python 3.13.11；pip 和 35 个运行依赖按哈希离线安装，`pip check` 通过；146 项测试通过，零失败/错误/跳过 |
+| 扫描及 Shell 失败阻断回归 | 18 项扫描测试和 2 项真实 Shell + Docker 协议 stub 测试通过；覆盖错误可见、凭据脱敏、精确例外、真实凭据注入、损坏/遗漏层、压缩 OCI、公共证书及后续 Compose 失败。stub 测试不代表容器测试通过 |
+| 运行时与图片 codec | 宿主官方版本检查和 codec 合成检查通过；未将结果解释为容器内 gVisor 通过 |
+| 当前安装内容扫描 | 本地合成 tar 覆盖 COPY 源码、官方运行时、干净 Python 安装及 codec，共 100,857 个常规文件、约 3.17 GB，零未批准命中；属于本地内容检查 |
+| 固定 Python 基础镜像 | 官方 OCI index、amd64 manifest 和 4 个层分别校验 SHA-256；5,035 个常规文件、约 120 MB 扫描通过，143 个公共证书路径验证通过；未运行容器 |
+| 构建上下文与静态检查 | Moby 官方 patternmatcher 确认 195 个 COPY 文件及 35 项排除探针；新增锁、策略和回归测试进入上下文。Shell 语法、actionlint 和源码安全检查通过 |
+
+本轮证据保存在本地忽略目录 `.validation/actions-scan-fix/`。Benchmark、GT、Rubric、Simulator、Baseline、Unified Evaluator 和六套 Harness 核心文件不在修改范围内。没有启动正式 Benchmark、调用付费模型、触发 Actions 或发布 GHCR。
+
+仍需用户手动以 `version=0.1.0-rc.1`、`publish=false` 运行：最终镜像构建与逐层扫描、Compose 挂载和 UID/Secrets 权限、容器内 gVisor 生命周期/凭据边界、Baseline 三类合成测试与五套原生 CLI 的 15 项矩阵、合成 HF 缓存跨容器复用及持久化。完整 HF 下载/离线缓存挂载、Docker 终止/恢复仍是后续发布验收项。若 gVisor 失败，先检查宿主 AppArmor audit 和子 user/mount namespace 支持；本轮未放宽 seccomp、AppArmor、capabilities 或非 root 限制。
+
+## 原发布准备记录（历史）
+
+以下保留本轮修复前的发布准备记录，测试数量、上传状态和阻塞描述采用当时口径；当前结论以本文开头的 Actions 修复记录为准。
 
 发布源码、部署文件、六套 Harness、锁定安装和本地合成执行已准备。当前服务器的外层隔离阻止 Docker 完整镜像构建和普通容器启动，因此尚未满足 `READY_TO_PUBLISH` 的核心 Docker 门禁。宿主 gVisor 测试通过不代表容器内通过。
 
@@ -20,11 +55,11 @@
 
 本轮原始检查证据保存在 `.validation/pre-push-final/`，不随源码上传。上传后先按 README 使用 `publish=false` 运行 Actions。源码上传无需等待以下镜像发布阻塞消除。
 
-## 新确认的镜像扫描阻塞
+## 原先确认的镜像扫描阻塞（本轮已修复已核实命中）
 
-`scripts/scan-image.py` 对官方依赖二进制中的公开编译路径和普通 Token 常量也会报错。已用锁定的 Node 24.14.0 复现 `personal_home_path`、`nonempty_secret_assignment`；其安装二进制与 Node 官方压缩包内文件逐字节摘要一致，压缩包 SHA-256 也匹配 `locks/runtimes.json`。因此当前扫描器至少存在确定的上游内容误报，云端可能在扫描阶段停止，不能宣称已具备可通过的完整发布流水线。其他已安装依赖的候选命中也需在真实镜像中逐项判别。
+原扫描器对官方依赖二进制中的公开编译路径和普通 Token 常量报错。此前已用锁定 Node 24.14.0 复现 `personal_home_path`、`nonempty_secret_assignment`。本轮按本文开头的来源、归档哈希、成员哈希及命中指纹完成精确修复；真实最终镜像仍须在 Actions 中扫描。
 
-这不影响源码安全上传：安装目录 `.tools` 未进入 Git 或 Docker 源码上下文，镜像依赖由锁文件重新安装。当前保留扫描失败即停止的规则；解决误报须核实上游来源与精确内容，不能通过跳过整个依赖目录、二进制或安全门禁来取得发布通过。本次上传前审查不把依赖扫描器改造扩展为发布实现任务。
+安装目录 `.tools` 未进入 Git 或 Docker 源码上下文，镜像依赖由锁文件重新安装。扫描失败即停止的规则继续生效，任何新命中须核实来源和精确内容；不允许跳过整个依赖目录、二进制或安全门禁。
 
 ## A–F 验收范围
 

@@ -1,6 +1,6 @@
 # CamAct Docker 发布项目
 
-**源码上传状态：READY_TO_PUSH；镜像发布状态：NOT_READY_TO_PUBLISH。** 当前源码可以上传 GitHub 私有仓库。本机普通 Docker 容器受外层服务器权限限制，真实镜像构建/Compose/gVisor 容器集成尚未验收；镜像扫描还存在已复现的上游内容误报。完整结果和剩余门禁见 [docs/VALIDATION.md](docs/VALIDATION.md)。宿主 gVisor 或合成 Mock 测试不能替代 Docker 测试。此轮没有上传 GitHub/GHCR，没有启动正式全量测评或付费模型请求。
+**镜像发布状态：NOT_READY_TO_PUBLISH。** 已修复镜像扫描日志不可见、合法 Docker 层被拒绝和已核实的官方依赖误报；扫描仍是发布前的强制门禁。本机普通 Docker 容器受外层服务器权限限制，完整镜像、Compose 和容器内 gVisor 集成仍需在 GitHub Actions 手动验收。可使用 `version=0.1.0-rc.1`、`publish=false` 重新运行。当前检查、诊断 artifact 和剩余门禁见 [docs/VALIDATION.md](docs/VALIDATION.md)。未启动正式 Benchmark、付费模型或 GHCR 发布。
 
 ## 职责与源码
 
@@ -162,10 +162,12 @@ python3 scripts/scan-image.py --archive /path/to/docker-save.tar
 1. 在私有仓库的 Settings → Actions 中允许执行本仓库 Workflow；无需添加 Agent、Judge、Simulator 或 HF Secrets。
 2. 打开 Actions → **Verify and optionally publish CamAct** → **Run workflow**，选择上传的分支，输入 `version=0.1.0-rc.1`，保持 `publish=false`。
 3. `ubuntu-24.04` Runner 依次扫描源码、构建并加载 `linux/amd64` 候选镜像、运行断网容器测试，再执行镜像层扫描、Compose/gVisor、图片 codec、15 个原生合成用例及容器重建持久化门禁。任一步失败，Workflow 失败；默认验证任务没有包写权限，也不登录或推送 GHCR。
-4. 处理 [VALIDATION.md](docs/VALIDATION.md) 的镜像扫描误报及宿主 AppArmor 问题，完成全部发布门禁并复核结果后，才以正式版本重新手动运行并选择 `publish=true`。此次仍会完整重建和重验，只推送本次通过扫描及测试的同一本地镜像，不另行构建。当前状态只适合执行第 2 步的验证。
+4. 核对 [VALIDATION.md](docs/VALIDATION.md) 中的剩余门禁和宿主 AppArmor 条件，完成全部验收并复核结果后，才以正式版本重新手动运行并选择 `publish=true`。此次仍会完整重建和重验，只推送本次通过扫描及测试的同一本地镜像，不另行构建。当前状态只适合执行第 2 步的验证。
 
 普通 Push、Tag 和 GitHub Release 均不会触发此 Workflow。入口 `publish.yml` 调用同 Commit 的 `verify-candidate.yml`；验证分支只有 `contents: read`，显式发布分支才额外授予 `packages: write`。Checkout 不保留 Git 凭据，第三方 Action 固定源码 Commit；内置 `GITHUB_TOKEN` 仅在门禁成功后用于 GHCR 登录。镜像仅使用明确版本和 `sha-<commit>` 标签，不使用 latest；验证不下载正式 Benchmark、不配置模型 Key、不调用真实模型。多阶段构建把源码、运行库和锁定 CLI 放入最终镜像，编译工具留在构建阶段。
 
 `scripts/scan-image.py` 在 Docker 门禁和发布前扫描 `docker save` 归档中的 OCI config、Env、History、Labels 以及每一层原始文件；即使文件随后被 whiteout 删除，也会被检查。工具只输出路径和问题类型，不输出候选密钥；归档结构异常时失败关闭。`bash scripts/verify-docker.sh` 会在构建后自动调用它，并验证镜像 ID、OCI 版本/源码标签、持久化 Benchmark 挂载和两个新容器的离线缓存复用。设置 `CAMACT_VERIFY_FULL_BENCHMARK=1` 可在已下载完整缓存的主机上额外执行固定 Commit 的容器内离线哈希检查。合成缓存检查只证明挂载/复用机制，不代替完整 Benchmark 验证。
+
+扫描诊断直接显示在 Actions 日志中，并在 `docker-verification-diagnostics` artifact 中保留脱敏扫描 JSON 和阶段摘要。已核实的官方依赖误报记录在 `locks/image-scan-exceptions.json`，必须同时匹配路径、文件哈希和具体命中指纹；更新依赖或基础镜像时需重新核验来源。未知命中、文件变化及扫描错误仍会阻断发布。
 
 本轮只本地执行 Workflow YAML/actionlint 静态检查，未触发远端验证或发布。只有真实 Docker 构建、启动、完整 HF 下载与挂载复用、终止/恢复、版本记录、容器内 gVisor/完整执行与评分统计、安全层扫描全部通过后，才可将镜像验收状态改为 `READY_TO_PUBLISH`。CI 的合成缓存和持久化门禁不能替代尚未完成的完整 HF 与终止/恢复验收。

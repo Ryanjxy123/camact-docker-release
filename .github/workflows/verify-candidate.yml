@@ -52,12 +52,26 @@ jobs:
           docker run --rm --network=none --entrypoint python camact:verify -B scripts/run-offline-tests.py
           docker run --rm --network=none --entrypoint python camact:verify -B scripts/check-runtimes.py
       - name: Require Compose and native gVisor integration before publishing
+        id: integration
         env:
           CAMACT_IMAGE: camact:verify
           CAMACT_VERIFY_SKIP_BUILD: '1'
           CAMACT_EXPECT_VERSION: ${{ steps.identity.outputs.version }}
           CAMACT_EXPECT_SOURCE_REVISION: ${{ github.sha }}
         run: bash scripts/verify-docker.sh
+      - name: Retain sanitized integration diagnostics
+        if: ${{ always() && steps.integration.outcome != 'skipped' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: docker-verification-diagnostics
+          # Deliberately exclude raw inspect output, logs, model configuration,
+          # credentials, benchmark files and synthetic execution artifacts.
+          path: |
+            .validation/docker-gates-*/image-security-scan.json
+            .validation/docker-gates-*/verification-summary.json
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 7
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         if: ${{ inputs.publish }}
         with:

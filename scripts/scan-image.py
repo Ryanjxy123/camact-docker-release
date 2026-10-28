@@ -8,12 +8,18 @@ declared config and layer.
 from __future__ import annotations
 
 import argparse
+import bz2
+import gzip
+import hashlib
 import importlib.util
 import io
 import ipaddress
 import json
+import lzma
 import os
+import posixpath
 import re
+import ssl
 import subprocess
 import sys
 import tarfile
@@ -43,11 +49,108 @@ _spec.loader.exec_module(_release_scanner)
 
 
 class ScanFailure(Exception):
-    pass
+    """Only fixed diagnostic codes and archive locations may be reported."""
+
+    def __init__(self, reason, location="<archive>", exit_code=None):
+        super().__init__(reason)
+        self.reason = reason.replace(" ", "_")
+        self.location = location
+        self.exit_code = exit_code
 
 
-def add_issue(issues, location, kind):
-    issues.append({"file": location, "kind": kind})
+def add_issue(issues, location, kind, candidate=None):
+    issue = {"file": location, "kind": kind}
+    if candidate is not None:
+        issue["match_sha256"] = hashlib.sha256(candidate.encode()).hexdigest()
+    if issue not in issues:
+        issues.append(issue)
+
+
+def safe_location(location):
+    for pattern in _release_scanner.SECRET_PATTERNS.values():
+        location = pattern.sub("<redacted>", location)
+    return ASSIGNMENT_RE.sub(lambda match: match.group(1) + "=<redacted>", location)
+
+
+def load_exceptions():
+    """Reviewed upstream findings, bound to one exact path and file digest.
+
+    This policy contains hashes, public package provenance and review notes,
+    never candidate values. It cannot exempt a directory or a whole rule.
+    """
+    path = Path(__file__).resolve().parents[1] / "locks/image-scan-exceptions.json"
+    try:
+        policy = json.loads(path.read_text())
+        if policy["schema"] != "camact.image-scan-exceptions.v1":
+            raise ValueError
+        sources = policy["sources"]
+        root = path.parents[1]
+        locks = {}
+        for source in sources.values():
+            lock_file = source["lock_file"]
+            if lock_file == "locks/runtimes.json":
+                if source["lock_entry"] not in {"node", "gvisor"}:
+                    raise ValueError
+                locks.setdefault(lock_file, json.loads((root / lock_file).read_text()))
+                pinned = locks[lock_file][source["lock_entry"]]
+                algorithm = "sha256" if "sha256" in pinned else "sha512"
+                if source["url"] != pinned["url"] or source["integrity"] != algorithm + ":" + pinned[algorithm]:
+                    raise ValueError
+            elif re.fullmatch(r"locks/cli/(claude|codex|opencode|deepseek|openclaw)/package-lock.json", lock_file):
+                if lock_file not in locks:
+                    locks[lock_file] = json.loads((root / lock_file).read_text())
+                pinned = locks[lock_file]["packages"][source["lock_entry"]]
+                if source["url"] != pinned["resolved"] or source["integrity"] != pinned["integrity"]:
+                    raise ValueError
+            elif lock_file in {"locks/requirements-runtime.lock", "locks/requirements-bootstrap.lock"}:
+                if not re.fullmatch(r"[A-Za-z0-9_.-]+==[A-Za-z0-9_.+-]+", source["lock_entry"]):
+                    raise ValueError
+                expected = source["lock_entry"] + " --hash=" + source["integrity"]
+                if expected not in (root / lock_file).read_text().splitlines():
+                    raise ValueError
+                if not source["url"].startswith("https://files.pythonhosted.org/"):
+                    raise ValueError
+            elif lock_file == "Dockerfile":
+                image = source["lock_entry"]
+                if not re.fullmatch(r"python:[A-Za-z0-9_.-]+@sha256:[a-f0-9]{64}", image):
+                    raise ValueError
+                if not re.search(r"^FROM " + re.escape(image) + r"(?: AS [a-z-]+)?$",
+                                 (root / "Dockerfile").read_text(), re.MULTILINE):
+                    raise ValueError
+                if not re.fullmatch(r"sha256:[a-f0-9]{64}", source["integrity"]):
+                    raise ValueError
+                if source["url"] != "https://registry-1.docker.io/v2/library/python/blobs/" + source["integrity"]:
+                    raise ValueError
+            else:
+                raise ValueError
+        entries = {}
+        for entry in policy["files"]:
+            name = safe_name(entry["path"])
+            if not name.startswith(("opt/camact/.tools/", "usr/", "etc/")):
+                raise ValueError
+            if not re.fullmatch(r"[a-f0-9]{64}", entry["sha256"]):
+                raise ValueError
+            source = sources[entry["source"]]
+            if not source["url"].startswith(("https://nodejs.org/dist/", "https://registry.npmjs.org/",
+                                             "https://storage.googleapis.com/gvisor/releases/",
+                                             "https://registry-1.docker.io/v2/library/python/blobs/",
+                                             "https://files.pythonhosted.org/")):
+                raise ValueError
+            if not source["integrity"] or not entry["source_member"] or not entry["review"]:
+                raise ValueError
+            for finding in entry["findings"]:
+                if not re.fullmatch(r"[a-f0-9]{64}", finding["match_sha256"]):
+                    raise ValueError
+                if finding["kind"] not in {*_release_scanner.SECRET_PATTERNS, "numeric_gateway",
+                                            "nonempty_secret_assignment", "personal_config_or_credential_path"}:
+                    raise ValueError
+            versions = entries.setdefault(name, {})
+            if entry["sha256"] in versions:
+                raise ValueError
+            versions[entry["sha256"]] = entry
+        return entries
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise ScanFailure("invalid upstream exception policy", "<exception-policy>") from None
 
 
 def safe_name(name):
@@ -61,13 +164,15 @@ def safe_name(name):
 
 def scan_text(text, location, issues, metadata=False):
     for kind, pattern in _release_scanner.SECRET_PATTERNS.items():
-        if pattern.search(text):
-            add_issue(issues, location, kind)
+        for match in pattern.finditer(text):
+            add_issue(issues, location, kind, match.group())
     for match in NUMERIC_GATEWAY_RE.finditer(text):
-        address = ipaddress.ip_address(match.group(1))
+        try:
+            address = ipaddress.ip_address(match.group(1))
+        except ValueError:
+            continue  # An invalid IP literal cannot identify a gateway.
         if not (address.is_loopback or address.is_unspecified):
-            add_issue(issues, location, "numeric_gateway")
-            break
+            add_issue(issues, location, "numeric_gateway", match.group())
     assignments = ASSIGNMENT_RE if metadata else DIRECT_ASSIGNMENT_RE
     for match in assignments.finditer(text):
         value = match.group(2)
@@ -83,16 +188,17 @@ def scan_text(text, location, issues, metadata=False):
                 or (value.endswith("(") and "." in value)):
             continue
         if value and value not in placeholders:
-            add_issue(issues, location, "nonempty_secret_metadata" if metadata else "nonempty_secret_assignment")
-            break
+            add_issue(issues, location, "nonempty_secret_metadata" if metadata else "nonempty_secret_assignment", match.group())
 
 
 def scan_stream(source, location, issues, metadata=False):
     tail = ""
+    digest = hashlib.sha256()
     while True:
         chunk = source.read(CHUNK_SIZE)
         if not chunk:
-            return
+            return digest.hexdigest()
+        digest.update(chunk)
         text = tail + chunk.decode("utf-8", errors="replace")
         scan_text(text, location, issues, metadata)
         tail = text[-TAIL_SIZE:]
@@ -120,12 +226,34 @@ def path_issue(path, size, regular=True):
     return None
 
 
-def scan_layer(source, label, issues):
+def public_certificate(data):
+    """Accept only complete, parseable public X.509 PEM certificates."""
+    if not re.fullmatch(rb"(?:\s*-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----\s*)+", data):
+        return False
+    try:
+        ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT).load_verify_locations(cadata=data.decode("ascii"))
+        return True
+    except (ssl.SSLError, UnicodeError):
+        return False
+
+
+def check_certificate_links(context, issues, stats):
+    for location, target in context["certificate_links"]:
+        if target in context["public_certificates"]:
+            stats["public_certificate_paths_verified"] = stats.get("public_certificate_paths_verified", 0) + 1
+        else:
+            add_issue(issues, location, "personal_config_or_credential_path")
+
+
+def scan_layer(source, label, issues, exceptions, stats, context=None):
+    own_context = context is None
+    context = context if context is not None else {"public_certificates": set(), "certificate_links": []}
     try:
         nested = tarfile.open(fileobj=source, mode="r|*")
-        count = 0
         seen = set()
         for member in nested:
+            if member.isdir() and member.name in {".", "./"}:
+                continue  # Debian's official rootfs tar includes this entry.
             name = safe_name(member.name)
             if name in seen:
                 raise ScanFailure("duplicate layer member")
@@ -134,66 +262,199 @@ def scan_layer(source, label, issues):
                 continue
             if member.issym() or member.islnk():
                 kind = path_issue(name, 0, regular=False)
+                if (member.issym() and PurePosixPath(name).parent == PurePosixPath("etc/ssl/certs")
+                        and name.endswith(".pem") and path_issue(name[:-4] + ".crt", 0, regular=False) is None):
+                    target = posixpath.normpath(posixpath.join("/", posixpath.dirname(name), member.linkname)).lstrip("/")
+                    if target.startswith("usr/share/ca-certificates/") and target.endswith(".crt"):
+                        context["certificate_links"].append((label + ":" + name, target))
+                        continue
+                if (member.issym() and name == "usr/lib/ssl/cert.pem"
+                        and member.linkname == "/etc/ssl/certs/ca-certificates.crt"):
+                    context["certificate_links"].append((label + ":" + name, "etc/ssl/certs/ca-certificates.crt"))
+                    continue
                 if kind:
                     add_issue(issues, label + ":" + name, kind)
                 continue
             if not member.isfile():
-                raise ScanFailure("unsupported layer member")
-            count += 1
+                raise ScanFailure("unsupported layer member", label + ":" + name)
+            location = label + ":" + name
+            findings = []
             kind = path_issue(name, member.size)
-            if kind:
-                add_issue(issues, label + ":" + name, kind)
-                continue
             fileobj = nested.extractfile(member)
             if fileobj is None:
                 raise ScanFailure("missing layer member content")
-            scan_stream(fileobj, label + ":" + name, issues)
+            # CA bundles have a .pem suffix too. Validate the complete content;
+            # appended private keys, assignments or comments cannot qualify.
+            certificate = False
+            if name.endswith((".pem", ".crt")) and member.size <= 2 * CHUNK_SIZE:
+                content = fileobj.read()
+                certificate = public_certificate(content)
+                fileobj = io.BytesIO(content)
+            if certificate:
+                context["public_certificates"].add(name)
+                if (kind == "personal_config_or_credential_path" and name.endswith(".pem")
+                        and path_issue(name[:-4] + ".crt", member.size) is None):
+                    kind = None
+                    stats["public_certificate_paths_verified"] = stats.get("public_certificate_paths_verified", 0) + 1
+            else:
+                context["public_certificates"].discard(name)
+            if kind:
+                add_issue(findings, location, kind, name)
+            digest = scan_stream(fileobj, location, findings)
+            stats["files_scanned"] += 1
+            stats["bytes_scanned"] += member.size
+            versions = exceptions.get(name, {})
+            approved = versions.get(digest)
+            if versions and approved is None:
+                add_issue(findings, location, "upstream_file_digest_mismatch")
+            allowed = {(item["kind"], item["match_sha256"]) for item in approved["findings"]} if approved else set()
+            for finding in findings:
+                if (finding["kind"], finding.get("match_sha256")) in allowed:
+                    stats["reviewed_upstream_findings"] += 1
+                else:
+                    issues.append(finding)
         nested.close()
-        if count == 0:
-            raise ScanFailure("empty layer")
+        if own_context:
+            check_certificate_links(context, issues, stats)
     except (tarfile.TarError, OSError, EOFError):
-        raise ScanFailure("malformed layer archive")
+        raise ScanFailure("malformed layer archive", label) from None
 
 
-def require_end_blocks(raw):
-    if len(raw) < 1024 or raw[-1024:] != b"\0" * 1024:
+def require_end_blocks(source):
+    source.seek(0, os.SEEK_END)
+    if source.tell() < 1024:
         raise ScanFailure("missing tar end blocks")
+    source.seek(-1024, os.SEEK_END)
+    if source.read(1024) != b"\0" * 1024:
+        raise ScanFailure("missing tar end blocks")
+    source.seek(0)
 
 
-def scan_archive_bytes(source):
-    issues = []
-    raw_archive = source.read()
-    require_end_blocks(raw_archive)
+def scan_layer_archive(source, label, issues, exceptions, stats, context):
+    """Docker's containerd exporter can retain compressed OCI layer blobs."""
+    magic = source.read(6)
+    source.seek(0)
+    if magic.startswith(b"\x1f\x8b"):
+        unpacked = gzip.GzipFile(fileobj=source)
+    elif magic.startswith(b"BZh"):
+        unpacked = bz2.BZ2File(source)
+    elif magic.startswith(b"\xfd7zXZ\x00"):
+        unpacked = lzma.LZMAFile(source)
+    else:
+        unpacked = None
     try:
-        with tarfile.open(fileobj=io.BytesIO(raw_archive), mode="r:*") as outer:
-            members = {}
-            payloads = {}
-            for member in outer:
-                name = safe_name(member.name)
-                if name in members:
-                    raise ScanFailure("duplicate docker archive member")
-                members[name] = member
-                if member.isfile():
-                    fileobj = outer.extractfile(member)
-                    if fileobj is None:
-                        raise ScanFailure("missing archive member content")
-                    payloads[name] = fileobj.read()
+        if unpacked is None:
+            require_end_blocks(source)
+            scan_layer(source, label, issues, exceptions, stats, context)
+        else:
+            with unpacked, tempfile.TemporaryFile() as spool:
+                while chunk := unpacked.read(CHUNK_SIZE):
+                    spool.write(chunk)
+                require_end_blocks(spool)
+                scan_layer(spool, label, issues, exceptions, stats, context)
+    except ScanFailure as exc:
+        if exc.location == "<archive>":
+            exc.location = label
+        raise
+    except (OSError, EOFError, lzma.LZMAError):
+        raise ScanFailure("layer decompression failed", label) from None
+
+
+def validate_layer_inventory(outer, members, declared, configs, issues):
+    """Cover classic Docker layers and OCI blobs, including OCI metadata.
+
+    Only descriptors reachable from index.json can account for extra JSON
+    blobs. An unreferenced layer/blob still fails closed.
+    """
+    blobs = {name for name, member in members.items()
+             if member.isfile() and name.startswith("blobs/")}
+    metadata = set()
+
+    def read_metadata(name):
+        member = members.get(name)
+        if member is None or not member.isfile() or member.size > 4 * CHUNK_SIZE:
+            raise ScanFailure("invalid OCI metadata member", name)
+        raw = outer.extractfile(member).read()
+        if name.startswith("blobs/") and name != "blobs/sha256/" + hashlib.sha256(raw).hexdigest():
+            raise ScanFailure("OCI metadata digest mismatch", name)
+        scan_text(raw.decode("utf-8", errors="replace"), name, issues, metadata=True)
+        value = json.loads(raw)
+        if not isinstance(value, dict):
+            raise ScanFailure("invalid OCI metadata", name)
+        return value
+
+    def visit(descriptor):
+        if not isinstance(descriptor, dict) or not re.fullmatch(r"sha256:[a-f0-9]{64}", descriptor.get("digest", "")):
+            raise ScanFailure("invalid OCI descriptor")
+        name = "blobs/sha256/" + descriptor["digest"].split(":", 1)[1]
+        if name in metadata or name in declared or name in configs:
+            raise ScanFailure("duplicate or inconsistent OCI descriptor", name)
+        metadata.add(name)
+        value = read_metadata(name)
+        if isinstance(value.get("manifests"), list):
+            for child in value["manifests"]:
+                visit(child)
+        elif isinstance(value.get("config"), dict) and isinstance(value.get("layers"), list):
+            config_digest = value["config"].get("digest", "")
+            config_name = "blobs/sha256/" + config_digest.removeprefix("sha256:")
+            if config_name not in configs:
+                raise ScanFailure("OCI config is absent from Docker manifest", name)
+            for layer in value["layers"]:
+                if not isinstance(layer, dict) or "blobs/sha256/" + layer.get("digest", "").removeprefix("sha256:") not in declared:
+                    raise ScanFailure("OCI layer is absent from Docker manifest", name)
+        else:
+            raise ScanFailure("invalid OCI manifest", name)
+
+    if "index.json" in members:
+        index = read_metadata("index.json")
+        if not isinstance(index.get("manifests"), list) or not index["manifests"]:
+            raise ScanFailure("invalid OCI index")
+        for descriptor in index["manifests"]:
+            visit(descriptor)
+    actual = {name for name, member in members.items() if member.isfile() and name.endswith(".tar")}
+    actual |= blobs - configs - metadata
+    if actual != declared:
+        raise ScanFailure("undeclared image layer")
+
+
+def scan_archive_bytes(source, exceptions=None, stats=None):
+    issues = []
+    exceptions = load_exceptions() if exceptions is None else exceptions
+    stats = stats if stats is not None else {"files_scanned": 0, "bytes_scanned": 0, "reviewed_upstream_findings": 0}
+    require_end_blocks(source)
+    context = {"public_certificates": set(), "certificate_links": []}
+    try:
+        outer = tarfile.open(fileobj=source, mode="r:*")
+        members = {}
+        for member in outer:
+            if member.isdir() and member.name in {".", "./"}:
+                continue
+            name = safe_name(member.name)
+            if name in members:
+                raise ScanFailure("duplicate docker archive member")
+            members[name] = member
     except (tarfile.TarError, OSError, EOFError):
         raise ScanFailure("malformed docker archive")
     try:
-        manifest = json.loads(payloads["manifest.json"])
+        manifest_member = members["manifest.json"]
+        if not manifest_member.isfile():
+            raise ScanFailure("invalid or missing manifest")
+        manifest = json.load(outer.extractfile(manifest_member))
         if not isinstance(manifest, list) or not manifest:
             raise ValueError
     except (KeyError, ValueError, TypeError, json.JSONDecodeError):
         raise ScanFailure("invalid or missing manifest")
     declared = set()
+    configs = set()
     for index, image in enumerate(manifest):
         if not isinstance(image, dict) or not isinstance(image.get("Config"), str) or not isinstance(image.get("Layers"), list):
             raise ScanFailure("invalid manifest entry")
         config_name = safe_name(image["Config"])
-        config_raw = payloads.get(config_name)
-        if config_raw is None:
+        configs.add(config_name)
+        config_member = members.get(config_name)
+        if config_member is None or not config_member.isfile():
             raise ScanFailure("missing image config")
+        config_raw = outer.extractfile(config_member).read()
         try:
             config = json.loads(config_raw)
             if not isinstance(config, dict):
@@ -233,22 +494,22 @@ def scan_archive_bytes(source):
             if layer_path in declared:
                 raise ScanFailure("duplicate declared layer")
             declared.add(layer_path)
-            raw = payloads.get(layer_path)
-            if raw is None:
-                raise ScanFailure("missing image layer")
-            require_end_blocks(raw)
-            scan_layer(io.BytesIO(raw), "layer[" + str(number) + "]", issues)
-    actual = {name for name in payloads if name.endswith("/layer.tar")}
-    if actual != declared:
-        raise ScanFailure("undeclared image layer")
+            layer_member = members.get(layer_path)
+            if layer_member is None or not layer_member.isfile():
+                raise ScanFailure("missing image layer", "manifest[" + str(index) + "].Layers[" + str(number) + "]")
+            layer = outer.extractfile(layer_member)
+            scan_layer_archive(layer, "layer[" + str(number) + "]", issues, exceptions, stats, context)
+    validate_layer_inventory(outer, members, declared, configs, issues)
+    check_certificate_links(context, issues, stats)
+    outer.close()
     return issues
 
 
-def run_archive(archive, image):
+def run_archive(archive, image, stats):
     if archive is not None:
         try:
             with archive.open("rb") as source:
-                return scan_archive_bytes(source)
+                return scan_archive_bytes(source, stats=stats)
         except OSError:
             raise ScanFailure("unreadable archive")
     process = subprocess.Popen([os.environ.get("CAMACT_DOCKER", "docker"), "save", image],
@@ -263,15 +524,18 @@ def run_archive(archive, image):
                 if not chunk:
                     break
                 spool.write(chunk)
-            if process.wait() != 0:
-                raise ScanFailure("docker save failed")
+            status = process.wait()
+            if status != 0:
+                raise ScanFailure("docker save failed", "<docker-save>", exit_code=status)
             spool.seek(0)
-            result = scan_archive_bytes(spool)
-    except Exception:
+            result = scan_archive_bytes(spool, stats=stats)
+    except BaseException:
         if process.poll() is None:
             process.kill()
             process.wait()
-        raise ScanFailure("docker archive scan failed")
+        raise
+    finally:
+        process.stdout.close()
     return result
 
 
@@ -281,15 +545,25 @@ def main(argv=None):
     group.add_argument("--image")
     group.add_argument("--archive", type=Path)
     args = parser.parse_args(argv)
+    stats = {"files_scanned": 0, "bytes_scanned": 0, "reviewed_upstream_findings": 0}
     try:
-        issues = run_archive(args.archive, args.image)
+        issues = run_archive(args.archive, args.image, stats)
+        # Archive member names are untrusted too; never print a key embedded
+        # in a filename or let a filename inject a GitHub logging command.
+        for issue in issues:
+            issue["file"] = safe_location(issue["file"])
         result = {"scope": "docker-image", "issues": issues, "issue_count": len(issues),
-                  "result": "PASS" if not issues else "FAIL", "candidate_values_printed": False}
+                  "result": "PASS" if not issues else "FAIL", "candidate_values_printed": False, **stats}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 1 if issues else 0
-    except (ScanFailure, OSError, ValueError, tarfile.TarError):
-        print(json.dumps({"scope": "docker-image", "issues": [{"file": "<archive>", "kind": "scan_failed"}],
-                          "issue_count": 1, "result": "FAIL", "candidate_values_printed": False},
+    except Exception as exc:
+        failure = {"file": safe_location(exc.location) if isinstance(exc, ScanFailure) else "<archive>",
+                   "kind": "scan_failed", "error_type": type(exc).__name__,
+                   "reason": exc.reason if isinstance(exc, ScanFailure) else "archive_read_or_parse_failed"}
+        if isinstance(exc, ScanFailure) and exc.exit_code is not None:
+            failure["exit_code"] = exc.exit_code
+        print(json.dumps({"scope": "docker-image", "issues": [failure],
+                          "issue_count": 1, "result": "FAIL", "candidate_values_printed": False, **stats},
                          ensure_ascii=False, indent=2))
         return 1
 

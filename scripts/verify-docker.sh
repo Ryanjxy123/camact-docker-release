@@ -1,16 +1,48 @@
 #!/usr/bin/env bash
 # Required integration gates on an unrestricted dedicated Docker host.
 # Synthetic local model protocols only: never uses the configured model keys.
-set -euo pipefail
+set -Eeuo pipefail
+umask 077
 camact_verify_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$camact_verify_root"
 camact_verify_id="docker-gates-$(date -u +%Y%m%dT%H%M%SZ)-$RANDOM"
 camact_verify_archive="$camact_verify_root/.validation/$camact_verify_id"
 mkdir -p "$camact_verify_archive"
 exec > >(tee "$camact_verify_archive/verification.log") 2>&1
+camact_verify_stage='compose-initialization'
+camact_verify_report() {
+  python3 - "$camact_verify_archive/verification-summary.json" "$1" "$camact_verify_stage" "$2" "$3" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+Path(sys.argv[1]).write_text(json.dumps({"result": sys.argv[2], "stage": sys.argv[3],
+    "exit_code": int(sys.argv[4]), "line": int(sys.argv[5])}, indent=2) + "\n")
+PY
+}
+camact_verify_error() {
+  local camact_verify_status=$1 camact_verify_line=$2
+  trap - ERR
+  # Never echo BASH_COMMAND: commands can contain environment/secret values.
+  printf 'Docker verification FAIL: stage=%s line=%s exit_code=%s\n' \
+    "$camact_verify_stage" "$camact_verify_line" "$camact_verify_status" >&2
+  if [[ "$camact_verify_stage" == native-gvisor-runtimes-and-credential-boundary ]]; then
+    printf '%s\n' 'Inspect host AppArmor audit denials and child user/mount namespace support for the non-root gVisor runner.' >&2
+  fi
+  camact_verify_report FAIL "$camact_verify_status" "$camact_verify_line" || \
+    printf '%s\n' 'Could not write the sanitized verification summary.' >&2
+  exit "$camact_verify_status"
+}
+trap 'camact_verify_error "$?" "$LINENO"' ERR
+camact_verify_step() {
+  camact_verify_stage=$1
+  printf '\nDocker verification stage: %s\n' "$camact_verify_stage"
+}
 camact_verify_image="${CAMACT_IMAGE:-camact:local}"
+camact_verify_step compose-initialization
 ./camactctl init
 docker compose config --quiet
+camact_verify_step candidate-build-or-inspection
 case "${CAMACT_VERIFY_SKIP_BUILD:-0}" in
   0) ./camactctl build ;;
   1) docker image inspect "$camact_verify_image" --format '{{.Id}}' ;;
@@ -18,9 +50,10 @@ case "${CAMACT_VERIFY_SKIP_BUILD:-0}" in
 esac
 camact_verify_inspect="$camact_verify_archive/image-inspect.json"
 if ! docker image inspect "$camact_verify_image" >"$camact_verify_inspect" 2>"$camact_verify_archive/image-inspect-error.log"; then
-  printf '%s\n' 'Docker image inspection failed; see the private validation archive.' >&2
-  exit 1
+  printf '%s\n' 'Docker image inspection failed; raw output remains in the private validation archive.' >&2
+  camact_verify_error 1 "$LINENO"
 fi
+camact_verify_step image-identity
 camact_verify_image_id=$(python3 - "$camact_verify_inspect" "$camact_verify_archive/image-identity.json" <<'PY'
 import json
 import os
@@ -61,15 +94,21 @@ print(image_id)
 PY
 )
 export CAMACT_IMAGE_DIGEST="$camact_verify_image_id"
-python3 scripts/scan-image.py --image "$camact_verify_image" >"$camact_verify_archive/image-security-scan.json"
+camact_verify_step image-security-scan
+# scan-image emits only paths, finding types and fingerprints. pipefail keeps
+# the publication gate closed while tee makes its safe JSON visible in CI.
+python3 scripts/scan-image.py --image "$camact_verify_image" | tee "$camact_verify_archive/image-security-scan.json"
+camact_verify_step synthetic-benchmark-cache-identity
 camact_verify_fixture_repo="Fixture/Container-Smoke-$camact_verify_id"
 camact_verify_fixture_revision='0000000000000000000000000000000000000000'
 camact_verify_fixture_hash=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$camact_verify_fixture_repo")
 camact_verify_fixture_mount="/var/lib/camact/benchmark/Fixture--Container-Smoke-$camact_verify_fixture_hash/$camact_verify_fixture_revision"
 trap 'docker compose --profile tools run --rm -T --entrypoint python storage-init -B -c '\''import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)'\'' "$camact_verify_fixture_mount" >/dev/null 2>&1 || true' EXIT
+camact_verify_step storage-initialization
 docker compose --profile tools run --rm -T storage-init
 # Create cache state as the same UID that opens its repository lock. A host
 # user's 0755 repository directory would deny the runner's O_CREAT lock open.
+camact_verify_step synthetic-benchmark-cache-creation
 docker compose run --rm -T --entrypoint python runner -B - "$camact_verify_fixture_mount" "$camact_verify_fixture_repo" "$camact_verify_fixture_revision" <<'PY'
 import hashlib
 import json
@@ -97,11 +136,13 @@ encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
 PY
 camact_verify_benchmark_code='import json, os; from release.benchmark import ensure; repo=os.environ["CAMACT_VERIFY_REPO"]; revision=os.environ["CAMACT_VERIFY_REVISION"]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] == 1; print(json.dumps({"repo_id": repo, "revision": revision, "file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))'
 for camact_verify_benchmark_pass in 1 2; do
+  camact_verify_step "synthetic-benchmark-cache-reuse-$camact_verify_benchmark_pass"
   docker compose run --rm -T --entrypoint python \
     -e CAMACT_VERIFY_REPO="$camact_verify_fixture_repo" \
     -e CAMACT_VERIFY_REVISION="$camact_verify_fixture_revision" \
     runner -B -c "$camact_verify_benchmark_code" >"$camact_verify_archive/benchmark-mount-$camact_verify_benchmark_pass.json"
 done
+camact_verify_step synthetic-benchmark-cache-comparison
 python3 - "$camact_verify_archive/benchmark-mount-1.json" "$camact_verify_archive/benchmark-mount-2.json" <<'PY'
 import json
 import sys
@@ -114,6 +155,7 @@ print(json.dumps({"status": "PASS", "file_count": first["file_count"],
                   "manifest_sha256": first["manifest_sha256"]}, sort_keys=True))
 PY
 if [[ "${CAMACT_VERIFY_FULL_BENCHMARK:-0}" == 1 ]]; then
+  camact_verify_step full-benchmark-cache-offline-reuse
   camact_verify_full_repo="${CAMACT_VERIFY_BENCHMARK_REPO:-Ryanjxy/CamAct-Benchmark}"
   camact_verify_full_revision="${CAMACT_VERIFY_BENCHMARK_COMMIT:-53e2f450042485dfc4a3b566de6f46988c3a5661}"
   docker compose run --rm -T --entrypoint python \
@@ -122,21 +164,31 @@ if [[ "${CAMACT_VERIFY_FULL_BENCHMARK:-0}" == 1 ]]; then
     runner -B -c 'import json, os; from release.benchmark import ensure; repo=os.environ["CAMACT_VERIFY_REPO"]; revision=os.environ["CAMACT_VERIFY_REVISION"]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] > 0; print(json.dumps({"repo_id": repo, "revision": revision, "file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))' \
     >"$camact_verify_archive/benchmark-full-offline.json"
 fi
+camact_verify_step ripgrep-runtime
 docker compose run --rm -T --entrypoint /usr/bin/rg runner --version
+camact_verify_step native-gvisor-runtimes-and-credential-boundary
 docker compose run --rm -T --entrypoint python runner -B scripts/check-runtimes.py --sandbox
+camact_verify_step native-image-codecs
 docker compose run --rm -T --entrypoint python runner -B scripts/check-codecs.py
+camact_verify_step offline-tests-in-compose
 docker compose run --rm -T --entrypoint python runner -B scripts/run-offline-tests.py
 for camact_verify_harness in claude codex opencode deepseek openclaw; do
   for camact_verify_mode in single_turn multi_turn users_history; do
+    camact_verify_step "native-loop-$camact_verify_harness-$camact_verify_mode"
     docker compose run --rm -T --entrypoint python runner -B scripts/native-loop-smoke.py \
       --harness "$camact_verify_harness" --mode "$camact_verify_mode" \
       --output "/var/lib/camact/scratch/$camact_verify_id/$camact_verify_harness-$camact_verify_mode"
   done
 done
 # Two separately created containers must observe identical persisted bytes.
+camact_verify_step persistence-marker-creation
 docker compose run --rm -T --entrypoint python runner -B -c \
   'from pathlib import Path; import sys; p=Path("/var/lib/camact/checkpoints")/sys.argv[1]; p.write_text(sys.argv[1]); print("persistence marker created")' "$camact_verify_id"
+camact_verify_step persistence-marker-recreated-container
 docker compose run --rm -T --entrypoint python runner -B -c \
   'from pathlib import Path; import sys; p=Path("/var/lib/camact/checkpoints")/sys.argv[1]; assert p.read_text()==sys.argv[1]; p.unlink(); print("recreated-container persistence PASS")' "$camact_verify_id"
+camact_verify_step tracked-source-security-scan
 python3 scripts/scan-release.py --tracked
+camact_verify_stage=complete
+camact_verify_report PASS 0 "$LINENO"
 printf '%s\n' 'Docker synthetic integration and image-layer scan passed. Full HF container validation, stop/resume, and final publication audit remain required.'

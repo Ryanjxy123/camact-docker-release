@@ -12,8 +12,9 @@ COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
 COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
 ENV PATH=/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin
 WORKDIR /opt/camact
-COPY locks/requirements-runtime.lock /tmp/requirements-runtime.lock
-RUN python -m pip install pip==26.2.2 && python -m pip install --require-hashes -r /tmp/requirements-runtime.lock \
+COPY locks/requirements-runtime.lock locks/requirements-bootstrap.lock /tmp/
+RUN python -m pip install --no-compile --require-hashes -r /tmp/requirements-bootstrap.lock \
+    && python -m pip install --no-compile --require-hashes -r /tmp/requirements-runtime.lock \
     && python -m pip check
 COPY . /opt/camact
 RUN bash scripts/install-runtimes.sh && python scripts/build-codecs.py \
