@@ -1,0 +1,30 @@
+name: Diagnose gVisor environment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Scan tracked release source before diagnostics
+        run: python3 scripts/scan-release.py --tracked
+      - name: Diagnose host, Docker policy, and nested runsc
+        run: python3 -B scripts/diagnose-gvisor.py --output "$RUNNER_TEMP/camact-gvisor-diagnostics"
+      - name: Retain sanitized diagnostic report
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gvisor-environment-diagnostics
+          path: |
+            ${{ runner.temp }}/camact-gvisor-diagnostics/report.json
+            ${{ runner.temp }}/camact-gvisor-diagnostics/summary.md
+          if-no-files-found: error
+          retention-days: 14
