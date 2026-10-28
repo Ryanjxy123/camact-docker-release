@@ -62,18 +62,15 @@ PY
 )
 export CAMACT_IMAGE_DIGEST="$camact_verify_image_id"
 python3 scripts/scan-image.py --image "$camact_verify_image" >"$camact_verify_archive/image-security-scan.json"
-camact_verify_data_dir="${CAMACT_DATA_DIR:-./.data}"
-case "$camact_verify_data_dir" in
-  /*) camact_verify_data_root="$camact_verify_data_dir" ;;
-  *) camact_verify_data_root="$camact_verify_root/$camact_verify_data_dir" ;;
-esac
 camact_verify_fixture_repo="Fixture/Container-Smoke-$camact_verify_id"
 camact_verify_fixture_revision='0000000000000000000000000000000000000000'
 camact_verify_fixture_hash=$(python3 -c 'import hashlib, sys; print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:12])' "$camact_verify_fixture_repo")
-camact_verify_fixture_dir="$camact_verify_data_root/benchmark/Fixture--Container-Smoke-$camact_verify_fixture_hash/$camact_verify_fixture_revision"
 camact_verify_fixture_mount="/var/lib/camact/benchmark/Fixture--Container-Smoke-$camact_verify_fixture_hash/$camact_verify_fixture_revision"
 trap 'docker compose --profile tools run --rm -T --entrypoint python storage-init -B -c '\''import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)'\'' "$camact_verify_fixture_mount" >/dev/null 2>&1 || true' EXIT
-python3 - "$camact_verify_fixture_dir" "$camact_verify_fixture_repo" "$camact_verify_fixture_revision" <<'PY'
+docker compose --profile tools run --rm -T storage-init
+# Create cache state as the same UID that opens its repository lock. A host
+# user's 0755 repository directory would deny the runner's O_CREAT lock open.
+docker compose run --rm -T --entrypoint python runner -B - "$camact_verify_fixture_mount" "$camact_verify_fixture_repo" "$camact_verify_fixture_revision" <<'PY'
 import hashlib
 import json
 import sys
@@ -98,7 +95,6 @@ encoded = json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
     "revision": revision, "file_count": 1, "total_bytes": len(data),
     "manifest_sha256": hashlib.sha256(encoded).hexdigest()}, sort_keys=True) + "\n")
 PY
-docker compose --profile tools run --rm -T storage-init
 camact_verify_benchmark_code='import json, os; from release.benchmark import ensure; repo=os.environ["CAMACT_VERIFY_REPO"]; revision=os.environ["CAMACT_VERIFY_REVISION"]; snapshot=ensure("/var/lib/camact/benchmark", repo, revision, offline=True); marker=json.loads((snapshot.parent / "complete.json").read_text()); assert marker["repo_id"] == repo and marker["revision"] == revision and marker["file_count"] == 1; print(json.dumps({"repo_id": repo, "revision": revision, "file_count": marker["file_count"], "manifest_sha256": marker["manifest_sha256"]}, sort_keys=True))'
 for camact_verify_benchmark_pass in 1 2; do
   docker compose run --rm -T --entrypoint python \
@@ -143,4 +139,4 @@ docker compose run --rm -T --entrypoint python runner -B -c \
 docker compose run --rm -T --entrypoint python runner -B -c \
   'from pathlib import Path; import sys; p=Path("/var/lib/camact/checkpoints")/sys.argv[1]; assert p.read_text()==sys.argv[1]; p.unlink(); print("recreated-container persistence PASS")' "$camact_verify_id"
 python3 scripts/scan-release.py --tracked
-printf '%s\n' 'Docker execution gates passed. Full HF completion, image-layer scan, and final publication audit are separate required gates.'
+printf '%s\n' 'Docker synthetic integration and image-layer scan passed. Full HF container validation, stop/resume, and final publication audit remain required.'

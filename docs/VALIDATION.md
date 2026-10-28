@@ -1,10 +1,30 @@
 # 发布验收记录
 
-验收日期：2026-10-28。当前结论：**NOT_READY**。
+验收日期：2026-10-28。源码上传结论：**READY_TO_PUSH**。镜像发布结论：**NOT_READY_TO_PUBLISH**。
 
 发布源码、部署文件、六套 Harness、锁定安装和本地合成执行已准备。当前服务器的外层隔离阻止 Docker 完整镜像构建和普通容器启动，因此尚未满足 `READY_TO_PUBLISH` 的核心 Docker 门禁。宿主 gVisor 测试通过不代表容器内通过。
 
 本轮未上传 GitHub/GHCR、未触发远端 Actions、未启动正式 Benchmark 测评，未调用付费模型。真实 HF 下载仅用于指定版本的本地完整性验证；没有重复远端内容审计。
+
+## GitHub 上传前最终检查
+
+本次检查以当前工作区为准，范围限于上传安全和发布配置，不重构 Harness、Benchmark 或评分逻辑。
+
+- Git 边界：本目录使用独立的实体 `.git`，无共享 objects/alternates、commondir、子模块或远端；正式 `camact` 不在本仓库中。原目录 258 个受保护源码/配置文件的 SHA-256 和 mtime 全部保持一致。
+- 源码与历史：205 个原追踪文件扫描通过；两个可达提交中共 209 个文件路径/Blob 组合及提交元数据检查通过，未发现真实 Key、Token、个人配置、敏感项目路径或数据产物。字面凭据候选经复核均为合成测试占位值或源码/依赖名称。Git 历史保留已有作者署名与邮箱归属元数据。
+- 排除规则：28 个 Git 忽略探针通过。Moby 官方解析器重新确认构建上下文为 192 个文件，全部来自 Git 追踪文件，无符号链接；35 个数据/缓存/凭据探针均被排除。`benchmark/` 仅包含必需的 Runner、Services、Evaluator 源码及评分注册表，未包含 Tasks、Users、GT 数据目录。最终修改限于 Workflow、验收脚本和本验收文档/README，COPY 文件清单未改变。
+- 依赖与入口：35 个 Python 依赖均精确固定且带 wheel SHA-256；五套官方 CLI 的 package.json、package-lock 与运行时版本一致，依赖使用公开 npm registry 并带完整性校验。Baseline 加五套原生 Harness、三角色配置、HF 固定 Commit、持久化挂载与 gVisor 验证入口已复核。镜像和 Compose 面向 `linux/amd64`，Debian 容器用户空间不绑定某一 Ubuntu 宿主版本；宿主仍需满足内核和隔离条件。
+- 既有测试：逐文件哈希确认既有 131 项离线测试所覆盖的 Python 实现、测试和依赖锁均未改变；15 项宿主原生合成矩阵、HF 完整下载与离线复用证据已复核。相对 COPY008 唯一的构建上下文变化是下述验收 Shell 脚本，不把旧 COPY 证据解释为该脚本的 Docker 验证结果。本轮没有重跑真实 Benchmark，也没有把宿主结果解释为容器测试通过。
+- Actions 必要调整：取消自动 Release 触发，手动 `publish` 默认 false；复用同一套构建/验收步骤，只有显式发布分支获得 `packages: write`。源码扫描前置到构建之前，Checkout 不保留凭据；两个 Workflow 均通过 actionlint 1.7.12。普通 Push、Tag、Release 不触发发布；验证失败不会执行 GHCR 登录或推送。
+- 验收脚本必要修复：原合成 HF 缓存由宿主用户创建；当其 UID 不等于 Runner 的 10001 时，0755 仓库目录会阻止 Runner 创建缓存锁，导致云端容器门禁失败。现改为先初始化存储，再由同一 Runner 容器用户创建合成缓存，消除宿主所有权和路径解析差异。Shell 语法检查、脚本实际内嵌 Python 及生产 HF `ensure(offline=True)` 两次复用验证通过，网络/Token 入口均用失败 stub 禁止；真实 UID/绑定挂载仍由 Docker 门禁验证。
+
+本轮原始检查证据保存在 `.validation/pre-push-final/`，不随源码上传。上传后先按 README 使用 `publish=false` 运行 Actions。源码上传无需等待以下镜像发布阻塞消除。
+
+## 新确认的镜像扫描阻塞
+
+`scripts/scan-image.py` 对官方依赖二进制中的公开编译路径和普通 Token 常量也会报错。已用锁定的 Node 24.14.0 复现 `personal_home_path`、`nonempty_secret_assignment`；其安装二进制与 Node 官方压缩包内文件逐字节摘要一致，压缩包 SHA-256 也匹配 `locks/runtimes.json`。因此当前扫描器至少存在确定的上游内容误报，云端可能在扫描阶段停止，不能宣称已具备可通过的完整发布流水线。其他已安装依赖的候选命中也需在真实镜像中逐项判别。
+
+这不影响源码安全上传：安装目录 `.tools` 未进入 Git 或 Docker 源码上下文，镜像依赖由锁文件重新安装。当前保留扫描失败即停止的规则；解决误报须核实上游来源与精确内容，不能通过跳过整个依赖目录、二进制或安全门禁来取得发布通过。本次上传前审查不把依赖扫描器改造扩展为发布实现任务。
 
 ## A–F 验收范围
 
@@ -21,7 +41,7 @@
 | F 发布源码安全 | PASS（本地检查） | 发布源代码模式扫描、独立 Git 与 Docker 上下文白名单；不包含 Benchmark 数据、旧产物、安装目录或个人配置。最终追踪文件扫描单独留证 |
 | F 凭据隔离 | PASS（宿主 gVisor 探测） | 十种合成三角色/覆盖/HF 凭据未进入 Guest、Launch Plan 或生命周期记录；原生 CLI 使用占位 Key |
 | F 最终镜像层 | NOT_TESTED | 没有可扫描的完整镜像，不能声称镜像层安全扫描通过 |
-| GitHub Workflow | PASS（本地静态检查） | actionlint 1.7.12 通过；发布前先扫描已构建本地候选镜像，再强制 Compose/gVisor 合成集成门禁，最后只推送已扫描候选。未执行远端 Workflow |
+| GitHub Workflow | PASS（本地静态检查） | 两个 Workflow 均通过 actionlint 1.7.12；默认只验收，显式发布时也必须先扫描已构建本地候选镜像并通过 Compose/gVisor 合成集成门禁，最后推送同一候选。未执行远端 Workflow，扫描误报与实际 Docker 门禁仍待解决 |
 
 ## 测试证据
 
@@ -83,4 +103,4 @@ bash scripts/verify-docker.sh
 
 还需在最终 Docker 镜像中确认 HF 下载与缓存挂载、运行配置及源码版本记录、Docker 终止/恢复行为，并对最终镜像的环境、文件、构建历史和每层执行敏感信息扫描。宿主完整 HF 缓存验证和 Git 源码扫描不能替代这些容器门禁。
 
-以上证据齐全后才能改为 `READY_TO_PUBLISH`。当前目录可继续本地审查；本轮不会创建远端仓库或执行发布。
+以上证据齐全且镜像扫描误报妥善解决后才能改为 `READY_TO_PUBLISH`。当前源码已达到 `READY_TO_PUSH`，可先上传私有仓库并手动执行只验证的 Actions；本轮没有创建远端仓库或执行上传、镜像发布。
