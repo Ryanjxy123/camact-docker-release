@@ -2,7 +2,38 @@
 
 验收日期：2026-10-28。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待本轮修复后的完整 Docker Actions 验收。
 
-## Run #3 镜像归档清单修复（本轮）
+## Run #4 whiteout 修复与发布前预检（本轮）
+
+失败记录为 [Run #4 / `40696049225`](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40696049225)，源码为 `1d7b69ed9769b93c99ec96635dd5b941fdb6490e`。真实诊断中恰有 15 条 `personal_config_or_credential_path`，全部位于 `layer[4]:etc/ssl/certs/.wh.<CA 名称>.pem`；构建、151 项离线测试和依赖/运行时检查已经通过，GHCR 步骤跳过。
+
+15 条命中指纹均等于路径的 SHA-256，结合旧代码可确认它们经过了常规文件扫描分支，被 `.pem` 路径规则误判。固定 Python 基础镜像内的 CA 包为 `20230311+deb12u1`；核对 SHA-256 认证的官方 Debian `ca-certificates_20250419~deb12u2_all.deb`，升级删除的证书与这 15 个名称逐一对应。原 Artifact 没有保存镜像层 tar 或成员头，**不能直接恢复原始标记的确切大小或 regular typeflag**；新扫描器会对实际输入逐项验证，绝不因名称相似就放行。
+
+按 [OCI image-spec v1.1.1 层规范](https://github.com/opencontainers/image-spec/blob/v1.1.1/layer.md#whiteouts) 接受空的常规文件删除标记和精确的 `.wh..wh..opq` opaque 标记；拒绝空目标、`.`/`..`、异常保留名称、whiteout 祖先路径、非空内容、链接、目录、设备、稀疏文件及异常设备/链接元数据。原生 overlayfs 字符设备不是 OCI tar whiteout，不予接受。标记名称仍扫描凭据，所有历史层中的真实敏感内容仍扫描；没有豁免证书目录、所有 PEM 或依赖目录，也没有修改上游例外锁。
+
+另外通过独立探针确认并修复以下实际问题：
+
+- CA 目标被删除、被链接替换或其父目录被链接替换后，旧扫描器仍保留公共证书信任，可能错误批准新 PEM 链接。现在逐层结算 CA 状态、在本层验证链接，whiteout 仅影响下层证书，同层重新添加证书与 tar 顺序无关；历史合法链接不会被后层删除追溯误报。
+- 本地 `camactctl build` 会在扫描前执行存储初始化容器；验收还会挂载调用者的真实配置、Secrets 和数据。现在保留构建参数/源码版本标签，直接构建候选，然后先检查身份并扫描不可变镜像 ID，安全通过后才执行容器；测试使用独立合成配置、占位凭据、存储和 Compose 网络。原有 `--network=none` 离线/运行时检查完整保留并移到扫描后。
+- 验收原先在首个失败后结束，隐藏独立故障。现在收集独立门禁的结果，对依赖失败明确记录 SKIP；任一必需门禁未 PASS 都整体失败。每阶段在独立的严格 errexit 上下文执行，避免收集状态时吞掉函数内错误；项目清理本身也是严格门禁。
+- 发布原先重新引用可变标签。现在扫描、容器执行和最终发布均使用同一不可变 ID，只有所有门禁通过才输出发布候选。Workflow 仍只手动触发，`publish=false` 不登录或推送 GHCR。
+
+失败输出包含阶段、退出码、固定错误分类及依赖状态。Artifact 白名单仅含脱敏的镜像扫描、阶段汇总和 AppArmor/seccomp/子 user+mount namespace 诊断 JSON；原始日志、inspect、调用者配置、凭据及缓存保留在私有目录，不上传。没有为收集诊断而允许未扫描通过的镜像接触真实凭据。
+
+| 检查 | 本轮结果与边界 |
+|---|---|
+| 完整离线回归 | Python 3.13.11；原 151 项全部保留，新增 4 项扫描和 6 项 Shell 回归后 **161 项通过，零失败/错误/跳过**；其中扫描 27 项、Shell 协议 stub 8 项。stub 不代表真实容器通过 |
+| 本次故障复现 | 4 个 SHA-256 认证的官方 Python 基础层，加同名 15 个常规零字节 whiteout 的重建归档：旧扫描器准确复现全部 15 条，修复后扫描 5,050 文件、120,426,789 字节，通过 15 个 whiteout、143 个公共 CA 路径；这是重建证据，不是恢复的 Run #4 镜像 |
+| 归档与官方依赖兼容 | 原有 Docker/OCI、压缩层、Moby 遗留配置、精确依赖例外和历史层回归全部保留；固定官方基础层再次扫描通过，未扩大例外 |
+| Compose 与 UID | 官方 Compose 2.40.3 实际配置解析、合成配置和带空格路径通过；生产初始化代码在隔离 user/mount namespace 的私有 tmpfs/chroot 中实测 UID 10001 可写六类数据目录，Secrets 为 0400、目录 0711，重新初始化不截断内容；不是 Docker 实际挂载验收 |
+| 后续入口与宿主运行时 | HF/Runner/camactctl/Baseline 合成流水线 33 项定向检查通过；固定运行时版本、15 个 codec 摘要、五套宿主 gVisor 生命周期和十种凭据 canary 通过；不是容器内六套 Harness 验收 |
+| 完整 HF 宿主缓存 | 固定 Commit 的 22,121 文件、2,350,271,484 字节，经生产 `ensure(offline=True)` 和 lease 两轮全量哈希复用通过，外部调用为零；未下载、未运行任务，不代表容器缓存/恢复通过 |
+| 静态与安全检查 | Shell 语法、两个 Workflow 的 actionlint、追踪源码安全扫描及 diff 检查通过；受保护源码、Dockerfile、Compose、依赖锁和全部核心测评行为保持不变 |
+
+当前仍为 **NOT_READY_TO_PUBLISH**。真实最终镜像逐层扫描、Docker 绑定挂载/UID/Secrets/重建生命周期、容器内 gVisor、Baseline 与五套 CLI 的 15 项矩阵、完整 HF 容器缓存及 Docker 终止/恢复仍须目标主机验收。本机外层隔离限制见下文，未声称这些检查通过。另已核实 Docker 默认 AppArmor profile 含 `deny mount,`，现有 Compose 没有经验证的替代策略；这是嵌套 runsc 的明确宿主策略风险，新增诊断可定位，但本轮未猜测性放宽 AppArmor、seccomp、namespace、capabilities 或非 root 限制。
+
+本轮仅修改扫描器、两份回归测试、必要验收脚本/Workflow 和本文档，共六个文件。证据在本地忽略目录 `.validation/run4-preflight/` 与 `.validation/run4-gates-config/`，不入 Git 或镜像。可以在推送后的 main 手动用 `version=0.1.0-rc.1`、`publish=false` 重跑；本轮不触发 Actions、不发布 GHCR、不运行正式 Benchmark、不调用付费模型。
+
+## Run #3 镜像归档清单修复（历史）
 
 失败记录为 [Run #3 / `40679929807`](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40679929807)，源码为 `020c4417ca9695c6333366e1e2a7ef0940c2ae2b`。实际诊断 artifact 确认：扫描已读取 106,300 个文件、3,299,979,110 字节，随后以 `ScanFailure: undeclared_image_layer` 失败，阶段为 `image-security-scan`。构建、146 项离线测试和运行时检查成功，GHCR 步骤跳过。原始 `docker save` 归档及集合差集没有保留，因此不能恢复该次运行中额外 Blob 的具体名称和数量。
 

@@ -183,6 +183,120 @@ def moby_archive(*, dirty_layer=False, secret_legacy=False, secret_history=False
 
 
 class ImageSecurityScannerTests(unittest.TestCase):
+    def test_empty_regular_and_opaque_whiteouts_are_valid(self):
+        markers = tar_payload([("etc/ssl/certs/.wh.Comodo_AAA_Services_root.pem", b""),
+                               ("etc/ssl/certs/.wh..wh..opq", b""),
+                               (".wh..wh..opq", b""), ("run/secrets/.wh.api_key", b"")])
+        for layer in (markers, gzip.compress(markers)):
+            with self.subTest(compressed=layer != markers):
+                code, result = run_scan(image_archive(layers=[layer]))
+                self.assertEqual(code, 0, result)
+                self.assertEqual(result["whiteouts_validated"], 4)
+                self.assertEqual(result["opaque_whiteouts_validated"], 2)
+                self.assertEqual(result["bytes_scanned"], 0)
+
+    def test_abnormal_whiteouts_fail_closed_without_printing_candidates(self):
+        cases = []
+        for name in (".wh.", ".wh..", ".wh...", ".wh..wh.invalid", ".wh.deleted/hidden"):
+            cases.append((tarfile.TarInfo(name), b""))
+        for kind in (tarfile.DIRTYPE, tarfile.SYMTYPE, tarfile.LNKTYPE,
+                     tarfile.CHRTYPE, tarfile.FIFOTYPE, tarfile.CONTTYPE):
+            member = tarfile.TarInfo("etc/ssl/certs/.wh.fixture.pem")
+            member.type = kind
+            if kind in {tarfile.SYMTYPE, tarfile.LNKTYPE}:
+                member.linkname = "fixture"
+            cases.append((member, b""))
+        for data, attributes in ((SYNTHETIC_KEY.encode(), {}),
+                                  (b"", {"linkname": "fixture"}),
+                                  (b"", {"devminor": 1}),
+                                  (b"", {"pax_headers": {"GNU.sparse.map": "0,0"}})):
+            member = tarfile.TarInfo("etc/ssl/certs/.wh.fixture.pem")
+            member.size = len(data)
+            for key, value in attributes.items():
+                setattr(member, key, value)
+            cases.append((member, data))
+        for member, data in cases:
+            with self.subTest(name=member.name, kind=member.type, linkname=member.linkname,
+                              devminor=member.devminor, attributes=member.pax_headers):
+                output = io.BytesIO()
+                with tarfile.open(fileobj=output, mode="w") as archive:
+                    archive.addfile(member, io.BytesIO(data))
+                payload = output.getvalue()
+                if member.devminor:
+                    # TarInfo serializes device fields only for device members.
+                    # Encode the malformed regular header itself, with a valid checksum.
+                    payload = bytearray(payload)
+                    payload[337:345] = b"0000001\0"
+                    payload[148:156] = b"        "
+                    payload[148:156] = f"{sum(payload[:512]):06o}\0 ".encode()
+                    payload = bytes(payload)
+                code, result = run_scan(image_archive(layers=[payload]))
+                self.assertNotEqual(code, 0, result)
+                self.assertEqual(result["issues"][0]["kind"], "scan_failed")
+                self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+
+    def test_whiteouts_preserve_all_historical_sensitive_findings(self):
+        first = tar_payload([("opt/camact/.ssh/id_rsa", b"opaque-private-data"),
+                             ("opt/camact/old.txt", SYNTHETIC_KEY.encode())])
+        for marker in ("opt/camact/.ssh/.wh.id_rsa", "opt/camact/.ssh/.wh..wh..opq"):
+            with self.subTest(marker=marker):
+                second = tar_payload([(marker, b""), ("opt/camact/.wh.old.txt", b"")])
+                code, result = run_scan(image_archive(layers=[first, second]))
+                self.assertNotEqual(code, 0)
+                kinds = {item["kind"] for item in result["issues"] if item["file"].startswith("layer[0]:")}
+                self.assertIn("personal_config_or_credential_path", kinds)
+                self.assertIn("provider_key", kinds)
+                self.assertEqual(result["whiteouts_validated"], 2)
+                self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+        code, result = run_scan(image_archive(layers=[tar_payload([(".wh." + SYNTHETIC_KEY, b"")])]))
+        self.assertNotEqual(code, 0)
+        self.assertIn("provider_key", {item["kind"] for item in result["issues"]})
+        self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+
+    def test_whiteout_certificate_state_is_layer_local_and_order_independent(self):
+        pem = ssl.DER_cert_to_PEM_cert(ssl.create_default_context().get_ca_certs(binary_form=True)[0]).encode()
+        target = "usr/share/ca-certificates/fixture.crt"
+        def layer(entries, link=None):
+            output = io.BytesIO()
+            with tarfile.open(fileobj=output, mode="w") as archive:
+                for name, data in entries:
+                    member = tarfile.TarInfo(name)
+                    member.size = len(data)
+                    archive.addfile(member, io.BytesIO(data))
+                if link:
+                    member = tarfile.TarInfo("etc/ssl/certs/" + link + ".pem")
+                    member.type = tarfile.SYMTYPE
+                    member.linkname = "/" + target
+                    archive.addfile(member)
+            return output.getvalue()
+        first = layer([(target, pem)], "historical")
+        for marker in ("usr/share/ca-certificates/.wh.fixture.crt",
+                       "usr/share/ca-certificates/.wh..wh..opq"):
+            with self.subTest(marker=marker):
+                # A later deletion does not invalidate an already checked link.
+                code, result = run_scan(image_archive(layers=[first, layer([(marker, b"")])]))
+                self.assertEqual(code, 0, result)
+                # A new link cannot inherit trust in the deleted certificate.
+                code, result = run_scan(image_archive(layers=[first, layer([(marker, b"")], "new")]))
+                self.assertNotEqual(code, 0)
+                self.assertTrue(any(item["file"] == "layer[1]:etc/ssl/certs/new.pem" for item in result["issues"]))
+                for entries in ([(target, pem), (marker, b"")], [(marker, b""), (target, pem)]):
+                    code, result = run_scan(image_archive(layers=[first, layer(entries, "new")]))
+                    self.assertEqual(code, 0, result)
+        # A symlink replacing a former certificate is not a verified certificate.
+        for replaced in (target, "usr/share/ca-certificates"):
+            with self.subTest(replaced=replaced):
+                replacement = io.BytesIO()
+                with tarfile.open(fileobj=replacement, mode="w") as archive:
+                    for name, destination in ((replaced, "/missing"), ("etc/ssl/certs/new.pem", "/" + target)):
+                        member = tarfile.TarInfo(name)
+                        member.type = tarfile.SYMTYPE
+                        member.linkname = destination
+                        archive.addfile(member)
+                code, result = run_scan(image_archive(layers=[first, replacement.getvalue()]))
+                self.assertNotEqual(code, 0)
+                self.assertTrue(any(item["file"] == "layer[1]:etc/ssl/certs/new.pem" for item in result["issues"]))
+
     def test_clean_binary_tool_archive_passes(self):
         code, result = run_scan(image_archive())
         self.assertEqual(code, 0)

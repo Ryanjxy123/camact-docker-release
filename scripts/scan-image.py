@@ -247,9 +247,35 @@ def check_certificate_links(context, issues, stats):
             add_issue(issues, location, "personal_config_or_credential_path")
 
 
+def whiteout_target(member, name, label):
+    """Validate OCI layer whiteouts, which are empty regular archive files."""
+    parts = PurePosixPath(name).parts
+    location = label + ":" + name
+    if any(part.startswith(".wh.") for part in parts[:-1]):
+        raise ScanFailure("invalid whiteout ancestor", location)
+    base = parts[-1]
+    if not base.startswith(".wh."):
+        return None
+    target = base[4:]
+    opaque = base == ".wh..wh..opq"
+    if not opaque and (target in {"", ".", ".."} or target.startswith(".wh.")):
+        raise ScanFailure("invalid whiteout name", location)
+    if member.type not in {tarfile.REGTYPE, tarfile.AREGTYPE}:
+        raise ScanFailure("invalid whiteout type", location)
+    if member.size != 0:
+        raise ScanFailure("nonempty whiteout", location)
+    if (member.linkname or member.sparse is not None or member.devmajor or member.devminor
+            or any(key.startswith("GNU.sparse") for key in member.pax_headers)):
+        raise ScanFailure("invalid whiteout metadata", location)
+    parent = posixpath.dirname(name)
+    return opaque, parent if opaque else posixpath.join(parent, target)
+
+
 def scan_layer(source, label, issues, exceptions, stats, context=None):
-    own_context = context is None
     context = context if context is not None else {"public_certificates": set(), "certificate_links": []}
+    inherited = context["public_certificates"].copy()
+    replaced, certificates, deleted, opaque_directories = set(), set(), set(), set()
+    non_directory_replacements = set()
     try:
         nested = tarfile.open(fileobj=source, mode="r|*")
         seen = set()
@@ -260,6 +286,20 @@ def scan_layer(source, label, issues, exceptions, stats, context=None):
             if name in seen:
                 raise ScanFailure("duplicate layer member")
             seen.add(name)
+            whiteout = whiteout_target(member, name, label)
+            if whiteout is not None:
+                opaque, target = whiteout
+                (opaque_directories if opaque else deleted).add(target)
+                # Empty markers have no file content, but names are metadata too.
+                scan_text(name, label + ":" + name, issues, metadata=True)
+                stats["files_scanned"] += 1
+                stats["whiteouts_validated"] = stats.get("whiteouts_validated", 0) + 1
+                if opaque:
+                    stats["opaque_whiteouts_validated"] = stats.get("opaque_whiteouts_validated", 0) + 1
+                continue
+            replaced.add(name)
+            if not member.isdir():
+                non_directory_replacements.add(name)
             if member.isdir():
                 continue
             if member.issym() or member.islnk():
@@ -293,13 +333,11 @@ def scan_layer(source, label, issues, exceptions, stats, context=None):
                 certificate = public_certificate(content)
                 fileobj = io.BytesIO(content)
             if certificate:
-                context["public_certificates"].add(name)
+                certificates.add(name)
                 if (kind == "personal_config_or_credential_path" and name.endswith(".pem")
                         and path_issue(name[:-4] + ".crt", member.size) is None):
                     kind = None
                     stats["public_certificate_paths_verified"] = stats.get("public_certificate_paths_verified", 0) + 1
-            else:
-                context["public_certificates"].discard(name)
             if kind:
                 add_issue(findings, location, kind, name)
             digest = scan_stream(fileobj, location, findings)
@@ -316,8 +354,18 @@ def scan_layer(source, label, issues, exceptions, stats, context=None):
                 else:
                     issues.append(finding)
         nested.close()
-        if own_context:
-            check_certificate_links(context, issues, stats)
+        # Whiteouts affect only lower layers, independently of tar member order.
+        # Resolve each layer's CA links before later deletion/replacement, so a
+        # historical valid link stays valid and a new link cannot use stale trust.
+        inherited = {path for path in inherited
+                     if not any(path == target or path.startswith(target + "/") for target in deleted)
+                     and not any(not directory or path.startswith(directory + "/")
+                                 for directory in opaque_directories)
+                     and not any(str(parent) in non_directory_replacements
+                                 for parent in PurePosixPath(path).parents)}
+        context["public_certificates"] = (inherited - replaced) | certificates
+        check_certificate_links(context, issues, stats)
+        context["certificate_links"].clear()
     except (tarfile.TarError, OSError, EOFError):
         raise ScanFailure("malformed layer archive", label) from None
 

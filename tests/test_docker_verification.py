@@ -1,8 +1,9 @@
-"""Exercise real shell failure gates with a disposable Docker protocol stub."""
+"""Exercise strict gates, isolation and failure collection with a Docker stub."""
 import json
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -11,10 +12,12 @@ import unittest
 from test_image_security import SYNTHETIC_KEY, image_archive, tar_payload
 
 ROOT = Path(__file__).resolve().parents[1]
+IMAGE_ID = "sha256:" + "1" * 64
+CALLER_CANARY = "caller-private-configuration-canary"
 
 
 class DockerVerificationDiagnostics(unittest.TestCase):
-    def run_gate(self, *, dirty):
+    def run_gate(self, *, dirty=False, failures=None, skip_build="1", expected_version=None):
         with tempfile.TemporaryDirectory(prefix="camact-gate-regression-") as temporary:
             project = Path(temporary)
             (project / "scripts").mkdir()
@@ -24,17 +27,53 @@ class DockerVerificationDiagnostics(unittest.TestCase):
             shutil.copy2(ROOT / "Dockerfile", project / "Dockerfile")
             (project / "camactctl").write_text("#!/bin/sh\nexit 0\n")
             (project / "camactctl").chmod(0o700)
+            # Final runner images intentionally omit git. Serve only the two
+            # Git protocols used by the real scanner/build-label code, with a
+            # fixed tracked inventory that excludes private fixture state.
+            tracked = [str(path.relative_to(project)) for path in project.rglob("*") if path.is_file()]
+            (project / "tracked-files.json").write_text(json.dumps(sorted(tracked)))
             fixture = project / "fixture.tar"
             fixture.write_bytes(image_archive(layers=[tar_payload([
                 ("opt/camact/fixture.txt", SYNTHETIC_KEY.encode() if dirty else b"safe")])]))
+            (project / "caller-models.env").write_text("AGENT_API_KEY=" + CALLER_CANARY + "\n")
+            (project / "failures.json").write_text(json.dumps(failures or {}))
             bin_dir = project / "bin"
             bin_dir.mkdir()
+            # Restrict PATH to the actual runtime prerequisites and protocol
+            # stubs; a host git installation cannot mask a new dependency.
+            for name in ("bash", "dirname", "date", "mkdir", "cat"):
+                executable = shutil.which(name)
+                self.assertIsNotNone(executable, name)
+                (bin_dir / name).symlink_to(executable)
+            python = bin_dir / "python3"
+            python.write_text("#!/bin/sh\nexec " + shlex.quote(sys.executable) + ' "$@"\n')
+            python.chmod(0o700)
+            git = bin_dir / "git"
+            git.write_text("#!" + sys.executable + "\n" + '''import json, pathlib, sys
+root = pathlib.Path(__file__).resolve().parents[1]
+args = sys.argv[1:]
+with (root / "git-calls.jsonl").open("a") as stream:
+    stream.write(json.dumps(args) + "\\n")
+if args == ["ls-files", "-z"]:
+    files = json.loads((root / "tracked-files.json").read_text())
+    sys.stdout.buffer.write(b"\\0".join(value.encode() for value in files) + b"\\0")
+elif args == ["rev-parse", "HEAD"]:
+    print("2" * 40)
+else:
+    raise SystemExit(97)
+''')
+            git.chmod(0o700)
             docker = bin_dir / "docker"
-            docker.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, sys
+            docker.write_text("#!" + sys.executable + "\n" + '''import json, os, pathlib, re, sys
 args = sys.argv[1:]
 root = pathlib.Path(__file__).resolve().parents[1]
 with (root / "docker-calls.jsonl").open("a") as stream:
     stream.write(json.dumps(args) + "\\n")
+failures = json.loads((root / "failures.json").read_text())
+def outcome(stage):
+    if stage in failures:
+        print("Permission denied; private raw diagnostics: " + os.environ["CALLER_CANARY"])
+        sys.exit(failures[stage])
 if args[:2] == ["image", "inspect"]:
     if "--format" in args:
         print("sha256:" + "1" * 64)
@@ -45,39 +84,188 @@ if args[:2] == ["image", "inspect"]:
                 "Env": ["CAMACT_IMAGE_VERSION=fixture-version", "CAMACT_SOURCE_REVISION=fixture-revision"]}}]))
 elif args[:1] == ["save"]:
     sys.stdout.buffer.write((root / "fixture.tar").read_bytes())
-elif "storage-init" in args:
-    sys.exit(23)
-elif args[:1] != ["compose"]:
+elif args[:1] == ["run"]:
+    assert "--network=none" in args
+    assert "sha256:" + "1" * 64 in args
+    outcome("network-disabled-offline-tests" if "scripts/run-offline-tests.py" in args else "network-disabled-runtime-checks")
+elif args[:1] == ["compose"]:
+    assert not any(name in os.environ for name in ["COMPOSE_FILE", "COMPOSE_PROFILES", "COMPOSE_PROJECT_NAME", "COMPOSE_ENV_FILES"])
+    assert args[args.index("--env-file") + 1] == "/dev/null"
+    if "--project-name" in args:
+        assert re.fullmatch(r"[a-z0-9][a-z0-9_-]*", args[args.index("--project-name") + 1])
+    compose_path = pathlib.Path(args[args.index("-f") + 1])
+    if "config" in args and "--format" in args:
+        assert args[args.index("--profile") + 1] == "tools"
+        outcome("compose-source")
+        if os.environ["CAMACT_VERIFY_SKIP_BUILD"] == "0":
+            assert len(os.environ["CAMACT_SOURCE_REVISION"]) == 40
+        print(json.dumps({"name": "camact", "services": {
+            "runner": {"image": "fixture-image", "user": "10001:10001", "read_only": True,
+                "build": {"context": str(root)},
+                "env_file": [{"path": str(root / "caller-models.env")}],
+                "environment": {"AGENT_API_KEY": os.environ["CALLER_CANARY"]},
+                "volumes": [{"type": "bind", "source": str(root / "caller-data"), "target": "/var/lib/camact"}]},
+            "storage-init": {"image": "fixture-image", "volumes": [
+                {"type": "bind", "source": str(root / "caller-data"), "target": "/var/lib/camact"},
+                {"type": "bind", "source": str(root / "caller-secrets"), "target": "/secrets"}]}},
+            "secrets": {name: {"file": str(root / "caller-secrets" / name)}
+                for name in ["agent_api_key", "judge_api_key", "simulator_api_key"]},
+            "networks": {"default": {"name": "caller-private-network"}}}))
+    elif "config" in args or "build" in args:
+        config = json.loads(compose_path.read_text())
+        assert os.environ["CALLER_CANARY"] not in json.dumps(config)
+        outcome("compose-build" if "build" in args else "compose-quiet")
+    elif "down" in args:
+        outcome("compose-project-cleanup")
+    elif "run" in args:
+        config = json.loads(compose_path.read_text())
+        assert config["services"]["runner"]["image"] == "sha256:" + "1" * 64
+        assert config["services"]["runner"]["user"] == "10001:10001"
+        assert config["services"]["runner"]["read_only"] is True
+        assert os.environ["CALLER_CANARY"] not in json.dumps(config)
+        for secret in config["secrets"].values():
+            assert pathlib.Path(secret["file"]).read_text() == "local-fixture-only"
+        models = pathlib.Path(config["services"]["runner"]["env_file"][0]["path"]).read_text()
+        assert "http://127.0.0.1" in models
+        assert os.environ["CALLER_CANARY"] not in models
+        if "storage-init" in args:
+            outcome("storage-initialization")
+        elif "scripts/check-runtimes.py" in args:
+            outcome("native-gvisor-runtimes-and-credential-boundary")
+        elif "scripts/check-codecs.py" in args:
+            outcome("native-image-codecs")
+        elif "scripts/run-offline-tests.py" in args:
+            outcome("offline-tests-in-compose")
+        elif "scripts/native-loop-smoke.py" in args:
+            stage = "native-loop-" + args[args.index("--harness") + 1] + "-" + args[args.index("--mode") + 1]
+            outcome(stage)
+        elif "-c" in args:
+            code = args[args.index("-c") + 1]
+            if "diagnostic_only" in code:
+                outcome("runner-sandbox-preflight")
+                print(json.dumps({"diagnostic_only": True, "apparmor_confined": True,
+                    "seccomp_mode": 2, "no_new_privileges": 1, "user_mount_namespace_probe_exit_code": 1}))
+            elif "CAMACT_VERIFY_REPO" in code:
+                outcome("synthetic-benchmark-cache-reuse")
+                print(json.dumps({"file_count": 1, "manifest_sha256": "fixture-manifest"}))
+            elif "p.write_text" in code:
+                outcome("persistence-marker-creation")
+            elif "p.read_text" in code:
+                outcome("persistence-marker-recreated-container")
+    else:
+        sys.exit(98)
+else:
     sys.exit(99)
 ''')
             docker.chmod(0o700)
             env = {key: value for key, value in os.environ.items()
-                   if not key.startswith(("CAMACT_", "AGENT_", "JUDGE_", "SIMULATOR_", "HF_"))}
-            env.update(PATH=str(bin_dir) + os.pathsep + os.environ["PATH"],
-                       CAMACT_IMAGE="fixture-image", CAMACT_VERIFY_SKIP_BUILD="1")
+                   if not key.startswith(("CAMACT_", "AGENT_", "JUDGE_", "SIMULATOR_", "HF_", "COMPOSE_"))}
+            env.update(PATH=str(bin_dir),
+                       CAMACT_IMAGE="fixture-image", CAMACT_VERIFY_SKIP_BUILD=skip_build,
+                       CALLER_CANARY=CALLER_CANARY, AGENT_API_KEY=CALLER_CANARY,
+                       COMPOSE_FILE="caller-private-compose.yml", COMPOSE_PROFILES="caller-private-profile",
+                       COMPOSE_PROJECT_NAME="caller-private-project", COMPOSE_ENV_FILES="caller-private.env",
+                       GITHUB_OUTPUT=str(project / "github-output.txt"))
+            if expected_version:
+                env["CAMACT_EXPECT_VERSION"] = expected_version
             process = subprocess.run(["bash", "scripts/verify-docker.sh"], cwd=project, env=env,
-                                     capture_output=True, text=True, timeout=30)
+                                     capture_output=True, text=True, timeout=60)
+            git_calls = [json.loads(line) for line in (project / "git-calls.jsonl").read_text().splitlines()]
+            self.assertTrue(git_calls)
+            self.assertTrue(all(call in (["ls-files", "-z"], ["rev-parse", "HEAD"]) for call in git_calls))
+            output = project / "github-output.txt"
+            process.image_output = output.read_text() if output.exists() else ""
             evidence = next((project / ".validation").glob("docker-gates-*"))
             summary = json.loads((evidence / "verification-summary.json").read_text())
-            scan = json.loads((evidence / "image-security-scan.json").read_text())
+            scan_path = evidence / "image-security-scan.json"
+            scan = json.loads(scan_path.read_text()) if scan_path.exists() else None
             calls = [json.loads(line) for line in (project / "docker-calls.jsonl").read_text().splitlines()]
-        return process, summary, scan, calls
+            config_path = evidence / "private/compose.json"
+            config = json.loads(config_path.read_text()) if config_path.exists() else None
+            public = "".join(path.read_text() for path in evidence.glob("*.json"))
+        return process, summary, scan, calls, config, public
 
     def test_scan_failure_is_visible_redacted_and_stops_integration(self):
-        process, summary, scan, calls = self.run_gate(dirty=True)
+        process, summary, scan, calls, _, public = self.run_gate(dirty=True)
         self.assertEqual(process.returncode, 1, process.stderr)
         self.assertEqual(summary["stage"], "image-security-scan")
         self.assertEqual(summary["result"], "FAIL")
         self.assertIn('"kind": "provider_key"', process.stdout)
         self.assertIn("opt/camact/fixture.txt", process.stdout)
-        self.assertIn("stage=image-security-scan", process.stdout + process.stderr)
-        self.assertNotIn(SYNTHETIC_KEY, process.stdout + process.stderr + json.dumps(scan))
-        self.assertFalse(any("storage-init" in call for call in calls))
+        self.assertNotIn(SYNTHETIC_KEY, process.stdout + process.stderr + public)
+        self.assertFalse(any("run" in call for call in calls))
+        self.assertEqual(process.image_output, "")
 
     def test_later_compose_failure_reports_its_stage_and_exit_status(self):
-        process, summary, scan, calls = self.run_gate(dirty=False)
+        process, summary, scan, calls, _, public = self.run_gate(failures={"storage-initialization": 23})
         self.assertEqual(scan["result"], "PASS")
         self.assertEqual(process.returncode, 23, process.stderr)
         self.assertEqual(summary["stage"], "storage-initialization")
-        self.assertEqual(summary["exit_code"], 23)
-        self.assertIn("stage=storage-initialization", process.stdout + process.stderr)
+        stages = {item["stage"]: item for item in summary["stages"]}
+        self.assertEqual(stages["network-disabled-offline-tests"]["result"], "PASS")
+        self.assertEqual(stages["native-image-codecs"]["result"], "SKIP")
+        self.assertEqual(stages["storage-initialization"]["observed_error_categories"], ["permission_denied"])
+        self.assertEqual(process.image_output, "")
+        self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
+        self.assertNotIn(CALLER_CANARY, process.stdout + process.stderr + public)
+
+    def test_independent_failures_and_all_native_cases_are_collected(self):
+        failures = {"native-image-codecs": 31, "native-loop-claude-single_turn": 41,
+                    "native-loop-openclaw-users_history": 42}
+        process, summary, _, calls, config, public = self.run_gate(failures=failures)
+        self.assertEqual(process.returncode, 31, process.stderr)
+        failed = {item["stage"]: item["exit_code"] for item in summary["stages"] if item["result"] == "FAIL"}
+        self.assertEqual(failed, failures)
+        self.assertEqual(sum("scripts/native-loop-smoke.py" in call for call in calls), 15)
+        self.assertEqual(summary["stages"][-1]["stage"], "compose-project-cleanup")
+        self.assertEqual(summary["stages"][-1]["result"], "PASS")
+        self.assertTrue(any("down" in call for call in calls))
+        self.assertEqual(config["services"]["runner"]["image"], IMAGE_ID)
+        self.assertNotIn("name", config["networks"]["default"])
+        self.assertNotIn(CALLER_CANARY, process.stdout + process.stderr + public + json.dumps(config))
+
+    def test_gvisor_failure_skips_dependent_loops_but_collects_other_failures(self):
+        process, summary, _, calls, _, _ = self.run_gate(failures={
+            "native-gvisor-runtimes-and-credential-boundary": 32, "native-image-codecs": 33})
+        self.assertEqual(process.returncode, 32)
+        stages = {item["stage"]: item for item in summary["stages"]}
+        self.assertEqual(stages["native-image-codecs"]["result"], "FAIL")
+        self.assertEqual(stages["native-loop-codex-multi_turn"]["result"], "SKIP")
+        self.assertEqual(stages["persistence-marker-recreated-container"]["result"], "PASS")
+        self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
+
+    def test_nested_initialization_failure_cannot_be_hidden_by_later_command(self):
+        process, summary, scan, calls, _, public = self.run_gate(failures={"compose-source": 37})
+        self.assertEqual(process.returncode, 37, process.stderr)
+        self.assertEqual(summary["stage"], "compose-initialization")
+        self.assertIsNone(scan)
+        self.assertFalse(any("--quiet" in call or "run" in call for call in calls))
+        self.assertNotIn(CALLER_CANARY, process.stdout + process.stderr + public)
+
+    def test_identity_mismatch_prevents_scan_and_all_container_commands(self):
+        process, summary, scan, calls, _, _ = self.run_gate(expected_version="wrong-version")
+        self.assertNotEqual(process.returncode, 0)
+        self.assertEqual(summary["stage"], "image-identity")
+        self.assertIsNone(scan)
+        self.assertFalse(any("run" in call for call in calls))
+
+    def test_build_has_no_prescan_storage_initialization_and_success_is_strict(self):
+        process, summary, scan, calls, _, _ = self.run_gate(skip_build="0")
+        self.assertEqual(process.returncode, 0, process.stderr + process.stdout)
+        self.assertEqual(scan["result"], "PASS")
+        self.assertEqual(summary["result"], "PASS")
+        self.assertTrue(all(item["result"] == "PASS" for item in summary["stages"]))
+        save = next(index for index, call in enumerate(calls) if call[0] == "save")
+        self.assertTrue(any("build" in call for call in calls[:save]))
+        self.assertFalse(any("run" in call for call in calls[:save]))
+        self.assertEqual(calls[save][1], IMAGE_ID)
+        self.assertEqual(process.image_output, "image_id=" + IMAGE_ID + "\n")
+        self.assertEqual(sum("scripts/native-loop-smoke.py" in call for call in calls), 15)
+
+    def test_project_cleanup_failure_keeps_publication_closed(self):
+        process, summary, _, calls, _, _ = self.run_gate(failures={"compose-project-cleanup": 52})
+        self.assertEqual(process.returncode, 52)
+        self.assertEqual(summary["result"], "FAIL")
+        self.assertEqual(summary["stage"], "compose-project-cleanup")
+        self.assertEqual(process.image_output, "")
+        self.assertEqual(sum("scripts/native-loop-smoke.py" in call for call in calls), 15)

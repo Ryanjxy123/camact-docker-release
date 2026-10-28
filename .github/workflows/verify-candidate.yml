@@ -47,10 +47,6 @@ jobs:
             SOURCE_REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Network-disabled offline tests and runtime checks
-        run: |
-          docker run --rm --network=none --entrypoint python camact:verify -B scripts/run-offline-tests.py
-          docker run --rm --network=none --entrypoint python camact:verify -B scripts/check-runtimes.py
       - name: Require Compose and native gVisor integration before publishing
         id: integration
         env:
@@ -69,6 +65,7 @@ jobs:
           path: |
             .validation/docker-gates-*/image-security-scan.json
             .validation/docker-gates-*/verification-summary.json
+            .validation/docker-gates-*/sandbox-preflight.json
           include-hidden-files: true
           if-no-files-found: warn
           retention-days: 7
@@ -84,8 +81,10 @@ jobs:
           IMAGE: ${{ steps.identity.outputs.image }}
           VERSION: ${{ steps.identity.outputs.version }}
           SOURCE_REVISION: ${{ github.sha }}
+          CANDIDATE_ID: ${{ steps.integration.outputs.image_id }}
         run: |
-          docker tag camact:verify "$IMAGE:$VERSION"
-          docker tag camact:verify "$IMAGE:sha-$SOURCE_REVISION"
+          [[ "$CANDIDATE_ID" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker tag "$CANDIDATE_ID" "$IMAGE:$VERSION"
+          docker tag "$CANDIDATE_ID" "$IMAGE:sha-$SOURCE_REVISION"
           docker push "$IMAGE:$VERSION"
           docker push "$IMAGE:sha-$SOURCE_REVISION"
