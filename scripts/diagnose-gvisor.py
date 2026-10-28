@@ -556,7 +556,9 @@ def audit_records(since):
                     value = fields.get(key, "")
                     if "/" in value and not (value in ("/", "/proc/fs", "/usr", "/usr/bin", "/usr/sbin", "/usr/lib", "/usr/lib64", "/bin", "/sbin", "/lib", "/lib64")
                             or re.fullmatch(r"/proc/(?:self|[0-9]+)/fd/[0-9]+/?", value)
-                            or value.startswith(("/proc/fs/", "/var/lib/camact/scratch/gvisor/", "/tmp/camact-", "/diagnostic/"))):
+                            or value.startswith(("/proc/fs/", "/var/lib/camact/scratch/gvisor/",
+                                "/var/lib/camact/scratch/production-plan-fixture-", "/var/lib/camact/scratch/camact-sandbox-check-",
+                                "/opt/camact/.tools/", "/tmp/camact-", "/diagnostic/"))):
                         fields[key] = "<path>"
                 timestamp = re.search(r"audit\(([0-9.]+:[0-9]+)\)", line)
                 if timestamp:

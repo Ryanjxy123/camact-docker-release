@@ -3,6 +3,11 @@ name: Diagnose gVisor environment
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: Minimal fixture or real production builder with synthetic bind data
+        type: choice
+        default: minimal
+        options: [minimal, production-plan]
       policy:
         description: AppArmor experiment selection; candidate never changes production
         type: choice
@@ -14,6 +19,7 @@ permissions:
 
 jobs:
   diagnose:
+    if: inputs.scope != 'production-plan'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -55,4 +61,54 @@ jobs:
           retention-days: 14
       - name: Unload experimental profile after container cleanup
         if: always() && matrix.apparmor == 'camact-gvisor-diagnostic-v1'
+        run: sudo apparmor_parser --remove scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
+  production-plan:
+    if: inputs.scope == 'production-plan'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Scan source and run independent diagnostic contracts
+        run: |
+          python3 -B scripts/scan-release.py --tracked
+          python3 -B -m unittest discover -s tests -p test_gvisor_diagnostics.py -v
+          python3 -B -m unittest discover -s tests -p 'test_production_plan*.py' -v
+      - name: Select unique diagnostic archive
+        run: |
+          day=$(TZ=Asia/Shanghai date +%F)
+          echo "DIAGNOSTIC_ARCHIVE=$GITHUB_WORKSPACE/harness/_log/$day/camact-gvisor-v1-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-production-plan" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build unchanged production Dockerfile for isolated diagnostics
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: camact:gvisor-diagnostic
+          build-args: |
+            VERSION=0.1.0-rc.1
+            SOURCE_REVISION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Load bounded experimental AppArmor policy on this disposable runner
+        run: sudo apparmor_parser --replace scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
+      - name: Verify real production builder, bind storage and CLI boundaries
+        run: python3 -B scripts/diagnostic/production-plan-controller.py --image camact:gvisor-diagnostic --output "$DIAGNOSTIC_ARCHIVE/production-plan"
+      - name: Retain sanitized production-plan evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gvisor-production-plan-diagnostics
+          path: |
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/report.json
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/summary.md
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/probe-artifacts/
+            ${{ env.DIAGNOSTIC_ARCHIVE }}/production-plan/logs/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Unload experimental profile after container cleanup
+        if: always()
         run: sudo apparmor_parser --remove scripts/diagnostic/camact-gvisor-diagnostic-v1.profile
