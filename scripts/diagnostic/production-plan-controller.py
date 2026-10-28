@@ -24,6 +24,7 @@ PROFILE = "camact-gvisor-diagnostic-v1"
 VERSION = "0.1.0-rc.1"
 INNER_OUTPUT = "/var/lib/camact/scratch/production-plan-probe-report"
 INNER_SCHEMA = "camact.gvisor.production-plan.v1"
+POLICY_REFERENCE_TARGET = "/opt/camact/deploy/seccomp-gvisor.json"
 CANARY = "camact-production-plan-synthetic-secret-only\n"
 CAPTURE_BYTES = 2 * 1024 * 1024
 ARTIFACT_BYTES = 4 * 1024 * 1024
@@ -617,11 +618,25 @@ class Controller:
         inner_path = target / "report.json"
         inner = json.loads(inner_path.read_text()) if inner_path.is_file() else {}
         errors = validate_inner(inner, files, self.check_runtimes)
+        reference = self.report.get("diagnostic_policy_reference_mount", {})
+        if inner.get("runtime", {}).get("seccomp_file_sha256") != reference.get("sha256"):
+            errors.append("diagnostic_policy_reference_fingerprint")
         self.report["inner_validation_errors"] = errors
         self.report["inner_outcome"] = inner.get("outcome")
         self.report["inner_lifecycle_count"] = len(inner.get("lifecycles", []))
         self.report["probe_artifacts"] = files
         self.check("inner_report", not errors, ", ".join(errors))
+
+    def policy_reference(self):
+        source = ROOT / "deploy/seccomp-gvisor.json"
+        self.check("diagnostic_policy_reference_file", source.is_file() and not source.is_symlink()
+                   and source.resolve() == source.absolute(), "The public policy reference must be the exact regular repository file")
+        self.report["diagnostic_policy_reference_mount"] = {
+            "source": "deploy/seccomp-gvisor.json", "destination": POLICY_REFERENCE_TARGET,
+            "type": "bind", "source_type": "file", "read_only": True,
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "purpose": "diagnostic_reference_only", "guest_exposed": False}
+        return source
 
     def runner_command(self, name, service, mounts, arguments, *, openclaw=False):
         self.check(name + ".scan_prerequisite", self.scanned and bool(self.image_id))
@@ -798,6 +813,7 @@ class Controller:
             self.image_manifest = {"schema": IMAGE_MANIFEST_SCHEMA, "image_id": self.image_id,
                                    "source_revision": provenance["source_revision"], "version": VERSION,
                                    "critical_source_digest": provenance["critical_source_digest"]}
+            policy_reference = self.policy_reference()
             service, storage = self.compose()
             self.check("new_fixture", not self.fixture.exists() and self.safe_fixture())
             self.fixture.mkdir(mode=0o700)
@@ -809,7 +825,8 @@ class Controller:
             self.helper(self.runner + "-storage", {"/var/lib/camact": (data, True), "/secrets": (secrets, True)},
                         tuple(storage["cap_add"]), ["-B", "/opt/camact/scripts/init-storage.py"], "storage")
             self.check("fixture_bind_path", self.safe_fixture() and not data.is_symlink() and not secrets.is_symlink())
-            mounts = {"/var/lib/camact": (data, True), "/run/secrets/production-plan-fixture": (secrets / "agent_api_key", False)}
+            mounts = {"/var/lib/camact": (data, True), "/run/secrets/production-plan-fixture": (secrets / "agent_api_key", False),
+                      POLICY_REFERENCE_TARGET: (policy_reference, False)}
             arguments = ["/opt/camact/scripts/diagnostic/production-plan-probe.py", "--output", INNER_OUTPUT]
             if self.check_runtimes:
                 arguments += ["--check-runtimes"]

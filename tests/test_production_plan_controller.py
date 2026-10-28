@@ -24,6 +24,7 @@ BASE_TREE = {
     "locks/runtimes.json": ("100644", "blob", "3" * 40),
     "scripts/scan-image.py": ("100644", "blob", "4" * 40),
     "compose.yaml": ("100644", "blob", "5" * 40),
+    "deploy/seccomp-gvisor.json": ("100644", "blob", "7" * 40),
     **{path: ("100644", "blob", "6" * 40) for path in controller.REUSE_SAFE_FILES},
 }
 
@@ -52,6 +53,7 @@ def inner_report(check_runtimes=True):
     names = controller.INNER_REQUIRED | ({"check_runtimes"} if check_runtimes else set())
     report = {"schema": controller.INNER_SCHEMA, "outcome": "PASS",
               "tests": [{"test": name, "status": "PASS"} for name in sorted(names)],
+              "runtime": {"seccomp_file_sha256": hashlib.sha256((ROOT / "deploy/seccomp-gvisor.json").read_bytes()).hexdigest()},
               "lifecycles": [lifecycle() for _ in range(7 if check_runtimes else 1)]}
     if check_runtimes:
         report["runtime_checks"] = {name: {"returncode": 0, "lifecycle": lifecycle()}
@@ -147,6 +149,7 @@ class DockerFixture:
         self.native_mutation = None
         self.native_drift = None
         self.native_payloads = {}
+        self.policy_reference_drift = None
         self.trees = {REVISION: dict(BASE_TREE), SOURCE_REVISION: dict(BASE_TREE)}
 
     def __call__(self, argv, timeout=20):
@@ -220,6 +223,14 @@ class DockerFixture:
             return result(stdout=name)
         if argv[:2] == ["docker", "inspect"]:
             actual = dict(self.containers[argv[-1]])
+            if (self.policy_reference_drift and actual["user"] == "10001:10001"
+                    and actual["state"]["Status"] == self.policy_reference_drift[0]):
+                requested = actual["state"]["Status"] == "created"
+                key, target = ("requested_mounts", "Target") if requested else ("mounts", "Destination")
+                actual[key] = [dict(item) for item in actual[key]]
+                for item in actual[key]:
+                    if item.get(target) == controller.POLICY_REFERENCE_TARGET:
+                        item[self.policy_reference_drift[1]] = self.policy_reference_drift[2]
             if self.drift and actual["user"] == "10001:10001":
                 actual[self.drift[0]] = self.drift[1]
             if self.helper_drift and actual["user"] == "0:0":
@@ -553,8 +564,14 @@ class ControllerTests(unittest.TestCase):
         self.assertNotIn("--env-file", runner)
         self.assertFalse(any(value.startswith("--env") for value in runner))
         mounts = [runner[index + 1] for index, value in enumerate(runner) if value == "--mount"]
-        self.assertEqual(len(mounts), 2)
+        self.assertEqual(len(mounts), 3)
         self.assertTrue(any("dst=/run/secrets/production-plan-fixture,readonly" in value for value in mounts))
+        self.assertIn(f"type=bind,src={ROOT / 'deploy/seccomp-gvisor.json'},dst={controller.POLICY_REFERENCE_TARGET},readonly", mounts)
+        reference = report["diagnostic_policy_reference_mount"]
+        self.assertEqual(reference["destination"], controller.POLICY_REFERENCE_TARGET)
+        self.assertIs(reference["read_only"], True)
+        self.assertIs(reference["guest_exposed"], False)
+        self.assertEqual(reference["sha256"], hashlib.sha256((ROOT / "deploy/seccomp-gvisor.json").read_bytes()).hexdigest())
         self.assertTrue((output / "report.json").is_file())
         exported = json.loads((output / "image-manifest.json").read_text())
         self.assertEqual(exported["source_revision"], REVISION)
@@ -568,6 +585,45 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "FAIL")
         self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
         self.assertFalse((output / "image-manifest.json").exists())
+
+    def test_public_policy_reference_rejects_wrong_type_and_symbolic_link_before_helpers(self):
+        source = controller.ROOT / "deploy/seccomp-gvisor.json"
+        for method, observed in (("is_file", False), ("is_symlink", True)):
+            with self.subTest(method=method):
+                original = getattr(Path, method)
+                def override(path):
+                    return observed if path == source else original(path)
+                fixture = DockerFixture()
+                with mock.patch.object(Path, method, override):
+                    report, _ = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertTrue(fixture.scan_seen)
+                self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
+    def test_public_policy_reference_mount_drift_is_rejected_before_or_after_start(self):
+        changes = (
+            ("created", "ReadOnly", False), ("created", "Source", str(ROOT / "compose.yaml")),
+            ("created", "Target", "/opt/camact/deploy/unexpected.json"), ("created", "Type", "volume"),
+            ("exited", "RW", True), ("exited", "Source", str(ROOT / "compose.yaml")),
+            ("exited", "Destination", "/opt/camact/deploy/unexpected.json"),
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                fixture = DockerFixture()
+                fixture.policy_reference_drift = change
+                report, _ = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "FAIL")
+                if change[0] == "created":
+                    self.assertFalse(any(argv[:2] == ["docker", "start"] and "-storage" not in argv[-1]
+                                         for argv in fixture.calls))
+                self.assertFalse(fixture.containers)
+
+    def test_public_policy_reference_fingerprint_must_match_the_inner_probe(self):
+        inner = inner_report()
+        inner["runtime"]["seccomp_file_sha256"] = "0" * 64
+        report, _ = self.invoke(DockerFixture(report=inner))
+        self.assertEqual(report["outcome"], "FAIL")
+        self.assertIn("diagnostic_policy_reference_fingerprint", report["inner_validation_errors"])
 
     def test_reuse_requires_the_original_identity_and_a_new_scan_before_containers(self):
         fixture = DockerFixture(image_revision=SOURCE_REVISION)
