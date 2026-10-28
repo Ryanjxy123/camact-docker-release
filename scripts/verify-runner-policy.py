@@ -19,7 +19,36 @@ READY = "/run/camact/runner-policy.json"
 RELEASE = "/run/camact/runner-policy.release"
 LIMIT = 2 * 1024 * 1024
 OPERATIONS = frozenset({"compose_create", "compose_ps", "created_inspect", "container_start",
-    "inside_evidence_copy", "started_inspect", "release_copy", "container_wait", "container_remove", "compose_down"})
+    "inside_evidence_read", "started_inspect", "release_write", "container_wait", "container_remove", "compose_down"})
+READ_READY_CODE = """import os,stat,sys
+try:
+    descriptor=os.open(sys.argv[1],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+except FileNotFoundError:
+    sys.exit(75)
+except OSError:
+    sys.exit('ready_open_failed')
+try:
+    with os.fdopen(descriptor,'rb') as stream:
+        metadata=os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid!=10001 or metadata.st_size>65536:
+            sys.exit('unsafe_ready_file')
+        content=stream.read(65537)
+        if len(content)>65536:
+            sys.exit('ready_file_too_large')
+except OSError:
+    sys.exit('ready_read_failed')
+sys.stdout.buffer.write(content)
+"""
+WRITE_RELEASE_CODE = """import os,sys
+try:
+    descriptor=os.open(sys.argv[1],os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o600)
+    with os.fdopen(descriptor,'wb') as stream:
+        stream.write(b'verified\\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+except OSError:
+    sys.exit('release_write_failed')
+"""
 TMPFS = {"/run/camact": (256 * 1024**2, "0700"),
          "/run/camact/openclaw": (256 * 1024**2, "0700"), "/tmp": (512 * 1024**2, "1777")}
 
@@ -39,6 +68,24 @@ def sanitized(value):
 def write_json(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def handshake_command(container, absolute_path, code):
+    if (not isinstance(container, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", container)
+            or not isinstance(absolute_path, str)
+            or not re.fullmatch(r"/run/camact/[a-z0-9][a-z0-9_.-]{0,90}", absolute_path)):
+        raise ValueError("invalid_handshake_target")
+    return ["docker", "exec", container, "python", "-B", "-c", code, absolute_path]
+
+
+def ready_command(container, absolute_path):
+    """Read only a bounded, owner-checked READY file in the live tmpfs namespace."""
+    return handshake_command(container, absolute_path, READ_READY_CODE)
+
+
+def release_command(container, absolute_path):
+    """Publish the fixed release marker once, as the container's configured UID."""
+    return handshake_command(container, absolute_path, WRITE_RELEASE_CODE)
 
 
 def flags(path):
@@ -81,7 +128,9 @@ def inside(command):
         evidence = inside_evidence()
     except (OSError, ValueError, KeyError):
         evidence = {"schema": "camact.runner-policy.inside.v1", "result": "FAIL", "checks": {"collection": False}}
-    write_json(Path(READY), evidence)
+    pending = Path(READY + ".pending")
+    write_json(pending, evidence)
+    os.replace(pending, READY)
     if evidence["result"] != "PASS":
         return 125
     deadline = time.monotonic() + 45
@@ -237,9 +286,6 @@ def run(args, command):
                  "timeout": timed_out, "stderr": bounded, "truncated": len(encoded) > remaining}
         if unavailable:
             entry["failure"] = "command_unavailable"
-        # Readiness polling may fail repeatedly; retain the latest bounded record.
-        if operation == "inside_evidence_copy":
-            report["operations"][:] = [item for item in report["operations"] if item["operation"] != operation]
         report["operations"].append(entry)
     def call(operation, argv, *, check=True, timeout=60):
         if operation not in OPERATIONS:
@@ -252,7 +298,7 @@ def run(args, command):
         except OSError:
             failed_operation(operation, unavailable=True)
             raise
-        if value.returncode:
+        if value.returncode and not (operation == "inside_evidence_read" and value.returncode == 75):
             failed_operation(operation, returncode=value.returncode, stderr=value.stderr)
         if check and value.returncode:
             raise RuntimeError("docker_command_failed")
@@ -273,16 +319,23 @@ def run(args, command):
             raise RuntimeError("runner_identity_missing")
         inspect(False)
         call("container_start", ["docker", "start", container])
-        ready_path = private / (stage + "-ready.json")
+        ready_content = None
         deadline = time.monotonic() + 20
-        while time.monotonic() < deadline:
-            copied = call("inside_evidence_copy", ["docker", "cp", container + ":" + READY, str(ready_path)], check=False)
-            if copied.returncode == 0:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 break
-            time.sleep(.1)
-        if not ready_path.is_file() or ready_path.is_symlink() or ready_path.stat().st_size > 65536:
+            observed = call("inside_evidence_read", ready_command(container, READY), check=False, timeout=min(5, remaining))
+            if observed.returncode == 75:
+                time.sleep(min(.1, max(0, deadline - time.monotonic())))
+                continue
+            if observed.returncode:
+                raise RuntimeError("inside_evidence_read_failed")
+            ready_content = observed.stdout
+            break
+        if ready_content is None or len(ready_content.encode("utf-8")) > 65536:
             raise RuntimeError("inside_evidence_missing")
-        evidence = json.loads(ready_path.read_text())
+        evidence = json.loads(ready_content)
         checks = evidence.get("checks")
         required = {"identity", "capabilities", "no_new_privileges", "seccomp", "apparmor", "root_readonly", "pids_limit", "data_bind", "tmpfs_flags"}
         if (evidence.get("schema") != "camact.runner-policy.inside.v1" or evidence.get("result") != "PASS"
@@ -290,10 +343,7 @@ def run(args, command):
             raise RuntimeError("inside_policy_failed")
         report["inside"] = evidence
         inspect(True)
-        release = private / (stage + "-release")
-        release.write_text("verified\n")
-        release.chmod(0o644)
-        call("release_copy", ["docker", "cp", str(release), container + ":" + RELEASE])
+        call("release_write", release_command(container, RELEASE), timeout=5)
         wait = call("container_wait", ["docker", "wait", container], timeout=args.timeout)
         result = int(wait.stdout.strip())
         report["command_exit_code"] = result

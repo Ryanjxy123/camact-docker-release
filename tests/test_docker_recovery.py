@@ -210,6 +210,35 @@ class DockerControl(unittest.TestCase):
         return recovery.RecoveryController(SimpleNamespace(output=directory, repository="Fixture/release", image_run_id="123",
             expected_source_revision="a" * 40, version="0.1.0-rc.1"))
 
+    def test_live_tmpfs_release_requires_both_inside_and_started_host_policy(self):
+        for failure in (None, "inside", "started"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                controller = self.controller(directory)
+                checks = dict.fromkeys(recovery.hf.INNER_CHECKS, True)
+                if failure == "inside":
+                    checks["seccomp"] = False
+                ready = {"schema": recovery.SCHEMA, "result": "PASS", "security": checks}
+                events = []
+                def inspect(*_args, **_kwargs):
+                    events.append("host")
+                    if failure == "started":
+                        raise recovery.hf.ValidationError("started_policy_failed")
+                def command(argv, **_kwargs):
+                    events.append("release" if argv[:2] == ["docker", "exec"] else "start")
+                    return SimpleNamespace(returncode=0, stdout="")
+                with patch.object(controller, "create"), patch.object(controller, "read_ready", return_value=ready), \
+                        patch.object(controller, "inspect", side_effect=inspect), patch.object(controller, "call", side_effect=command) as call:
+                    if failure:
+                        with self.assertRaises(recovery.hf.ValidationError):
+                            controller.start("stop", "observe")
+                        self.assertNotIn("release", events)
+                    else:
+                        controller.start("stop", "observe")
+                        self.assertEqual(events, ["start", "host", "release"])
+                        self.assertEqual(call.call_args.args[0][-1], recovery.RELEASE)
+                        self.assertEqual(call.call_args.kwargs["timeout"], 5)
+                self.assertFalse(any(item.args[0][:2] == ["docker", "cp"] for item in call.call_args_list))
+
     def test_recovery_create_is_scan_gated_and_uses_network_none_without_secrets(self):
         with tempfile.TemporaryDirectory() as directory:
             controller = self.controller(directory)

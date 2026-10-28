@@ -370,7 +370,8 @@ def inside(args):
         hf.require(os.environ.get("CAMACT_SOURCE_REVISION") == args.expected_source_revision
             and os.environ.get("CAMACT_IMAGE_VERSION") == args.version
             and os.environ.get("CAMACT_IMAGE_DIGEST") == args.image_id, "inside_image_identity_mismatch")
-        hf.write(READY, {"schema": SCHEMA, "security": security, "result": "PASS"})
+        hf.write(READY + ".pending", {"schema": SCHEMA, "security": security, "result": "PASS"})
+        os.replace(READY + ".pending", READY)
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             release = Path(RELEASE)
@@ -463,21 +464,12 @@ class RecoveryController(hf.Controller):
         name = "camact-recovery-" + case + "-" + phase + "-" + str(os.getpid())
         self.create(name, stage=stage)
         self.call(["docker", "start", name])
-        local = self.private / (case + "-" + phase + "-policy.json")
-        deadline = time.monotonic() + 25
-        while time.monotonic() < deadline:
-            if self.call(["docker", "cp", name + ":" + READY, local], check=False).returncode == 0:
-                break
-            time.sleep(.1)
-        observed = hf.read_object(local)
+        observed = self.read_ready(name, READY)
         self.check(stage + "_inside_policy", set(observed) == {"schema", "security", "result"}
             and observed["schema"] == SCHEMA and observed["result"] == "PASS"
             and set(observed["security"]) == hf.INNER_CHECKS and all(value is True for value in observed["security"].values()))
         self.inspect(name, stage=stage, started=True)
-        released = self.private / (case + "-" + phase + "-release")
-        released.write_text("verified\n", encoding="utf-8")
-        released.chmod(0o644)
-        self.call(["docker", "cp", released, name + ":" + RELEASE])
+        self.release(name, RELEASE)
         return name
 
     def phase(self, case, phase):

@@ -123,16 +123,35 @@ elif args[:1] == ["inspect"]:
         "Mounts":[{"Type":"bind","Source":m["Source"],"Destination":m["Target"],"RW":not m["ReadOnly"]} for m in mounts]}
     if "runner-policy-created" in failures:
         actual["HostConfig"]["ReadonlyRootfs"]=False
+    if value.get("running"):
+        value["started_inspected"]=True
+        save_state()
     print(json.dumps(actual))
 elif args[:1] == ["start"]:
     containers[args[-1]]["running"]=True
     save_state()
 elif args[:1] == ["cp"]:
-    if args[1].endswith(":/run/camact/runner-policy.json"):
+    # Moby's copy filesystem view cannot see the running container's tmpfs.
+    # Do not make a broken cp handshake pass in this simulated daemon.
+    if any(":/run/camact/" in value for value in args[1:]):
+        print("live tmpfs is unavailable through docker cp", file=sys.stderr)
+    raise SystemExit(96)
+elif args[:1] == ["exec"]:
+    assert len(args) == 7 and args[2:5] == ["python","-B","-c"]
+    assert isinstance(args[5],str) and args[5]
+    value = containers[args[1]]
+    assert value.get("running") is True
+    if args[6] == "/run/camact/runner-policy.json":
+        value["ready_reads"]=value.get("ready_reads",0)+1
+        save_state()
+        if value["ready_reads"] == 1:
+            raise SystemExit(75)
         checks = {name:True for name in ["identity","capabilities","no_new_privileges","seccomp","apparmor","root_readonly","pids_limit","data_bind","tmpfs_flags"]}
-        pathlib.Path(args[2]).write_text(json.dumps({"schema":"camact.runner-policy.inside.v1","result":"PASS","checks":checks}))
-    elif args[-1].endswith(":/run/camact/runner-policy.release"):
-        containers[args[-1].split(":")[0]]["released"]=True
+        print(json.dumps({"schema":"camact.runner-policy.inside.v1","result":"PASS","checks":checks}))
+    elif args[6] == "/run/camact/runner-policy.release":
+        assert value.get("ready_reads",0) >= 2 and value.get("started_inspected") is True
+        assert value.get("released") is not True
+        value["released"]=True
         save_state()
     else:
         raise SystemExit(96)
@@ -337,7 +356,7 @@ else:
             self.assertFalse(operations[0]["truncated"])
         self.assertTrue(any("create" in call for call in calls))
         self.assertTrue(any("down" in call for call in calls))
-        self.assertFalse(any(call[0] in {"inspect", "start", "cp", "wait", "logs", "rm", "synthetic-command"}
+        self.assertFalse(any(call[0] in {"inspect", "start", "cp", "exec", "wait", "logs", "rm", "synthetic-command"}
                              for call in calls))
         self.assertFalse(any("scripts/native-loop-smoke.py" in call for call in calls))
         self.assertEqual(process.remaining_containers, {})
@@ -415,6 +434,15 @@ else:
         self.assertEqual(calls[save][1], IMAGE_ID)
         self.assertEqual(process.image_output, "image_id=" + IMAGE_ID + "\n")
         self.assertEqual(sum("scripts/native-loop-smoke.py" in call for call in calls), 15)
+        self.assertFalse(any(call[0] == "cp" and any(":/run/camact/" in value for value in call[1:])
+                             for call in calls))
+        reads = [call for call in calls if call[0] == "exec" and call[-1] == "/run/camact/runner-policy.json"]
+        releases = [call for call in calls if call[0] == "exec" and call[-1] == "/run/camact/runner-policy.release"]
+        self.assertTrue(reads)
+        self.assertEqual(len(reads), 2 * len(releases))
+        self.assertEqual({call[1] for call in reads}, {call[1] for call in releases})
+        self.assertTrue(all(len(call) == 7 and call[2:5] == ["python", "-B", "-c"] for call in reads + releases))
+        self.assertEqual(process.remaining_containers, {})
 
     def test_project_cleanup_failure_keeps_publication_closed(self):
         process, summary, _, calls, _, _ = self.run_gate(failures={"compose-project-cleanup": 52})

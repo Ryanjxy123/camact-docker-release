@@ -312,7 +312,8 @@ def inside(args):
         require(os.environ.get("CAMACT_SOURCE_REVISION") == args.expected_source_revision
                 and os.environ.get("CAMACT_IMAGE_VERSION") == args.version
                 and os.environ.get("CAMACT_IMAGE_DIGEST") == args.image_id, "inside_image_identity_mismatch")
-        write(READY, {"schema": SCHEMA, "status": "PASS", "security": result["security"]})
+        write(READY + ".pending", {"schema": SCHEMA, "status": "PASS", "security": result["security"]})
+        os.replace(READY + ".pending", READY)
         deadline = time.monotonic() + 45
         while time.monotonic() < deadline:
             path = Path(RELEASE)
@@ -472,6 +473,26 @@ class Controller:
             require(result.returncode == 0, "external_command_failed")
         return result
 
+    def read_ready(self, name, path):
+        # docker cp opens a separate filesystem view whose tmpfs is not the
+        # live container tmpfs. Use the existing non-root process namespace.
+        command = runner_policy().ready_command(name, path)
+        deadline = time.monotonic() + 25
+        while (remaining := deadline - time.monotonic()) > 0:
+            observed = self.call(command, timeout=min(5, remaining), check=False)
+            if observed.returncode == 75:
+                time.sleep(min(.1, remaining))
+                continue
+            require(observed.returncode == 0 and len(observed.stdout.encode("utf-8")) <= 65536,
+                    "inside_policy_handshake_failed")
+            value = json.loads(observed.stdout)
+            require(isinstance(value, dict), "inside_policy_handshake_failed")
+            return value
+        raise ValidationError("inside_policy_handshake_missing")
+
+    def release(self, name, path):
+        self.call(runner_policy().release_command(name, path), timeout=5)
+
     def inspect(self, name, *, helper=False, started=False, stage=None):
         actual = json.loads(self.call(["docker", "inspect", "--format", "{{json .}}", name]).stdout)
         errors = container_errors(actual, self.manifest, self.data, self.tmpfs, self.seccomp,
@@ -599,22 +620,12 @@ class Controller:
         try:
             self.create(name, stage=stage)
             self.call(["docker", "start", name])
-            ready = self.private / (stage + "-ready.json")
-            deadline = time.monotonic() + 25
-            while time.monotonic() < deadline:
-                copied = self.call(["docker", "cp", name + ":" + READY, ready], check=False)
-                if copied.returncode == 0:
-                    break
-                time.sleep(.1)
-            evidence = read_object(ready)
+            evidence = self.read_ready(name, READY)
             self.check(stage + "_inside_policy", set(evidence) == {"schema", "status", "security"}
                 and evidence["schema"] == SCHEMA and evidence["status"] == "PASS"
                 and set(evidence["security"]) == INNER_CHECKS and all(item is True for item in evidence["security"].values()))
             self.inspect(name, started=True, stage=stage)
-            released = self.private / (stage + "-release")
-            released.write_text("verified\n", encoding="utf-8")
-            released.chmod(0o644)
-            self.call(["docker", "cp", released, name + ":" + RELEASE])
+            self.release(name, RELEASE)
             waited = self.call(["docker", "wait", name], timeout=12600 if stage == "download" else 600)
             local = self.private / (stage + "-summary.json")
             self.call(["docker", "cp", name + ":/var/lib/camact/checkpoints/" + stage + ".json", local])

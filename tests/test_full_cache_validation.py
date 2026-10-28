@@ -284,6 +284,58 @@ class ProvenanceAndDocker(unittest.TestCase):
                     validation.inside_checks()
 
 
+class LiveHandshake(unittest.TestCase):
+    def controller(self, directory):
+        return validation.Controller(SimpleNamespace(output=directory, image_run_id="123", repository="Fixture/release",
+            expected_source_revision=SOURCE, version="0.1.0-rc.1"))
+
+    def test_live_exec_retries_only_missing_ready_and_keeps_stdout_private(self):
+        with tempfile.TemporaryDirectory() as directory:
+            controller = self.controller(directory)
+            results = [SimpleNamespace(returncode=75, stdout=""),
+                       SimpleNamespace(returncode=0, stdout='{"synthetic_private":"ready"}')]
+            with patch.object(controller, "call", side_effect=results) as call, patch.object(validation.time, "sleep"):
+                self.assertEqual(controller.read_ready("fixture-container", validation.READY), {"synthetic_private": "ready"})
+            self.assertEqual(call.call_count, 2)
+            for item in call.call_args_list:
+                self.assertEqual(item.args[0][:3], ["docker", "exec", "fixture-container"])
+                self.assertEqual(item.args[0][-1], validation.READY)
+                self.assertLessEqual(item.kwargs["timeout"], 5)
+            self.assertNotIn("synthetic_private", json.dumps(controller.report))
+
+    def test_unsafe_oversized_and_timed_out_handshakes_fail_without_retry(self):
+        results = [SimpleNamespace(returncode=1, stdout=""),
+                   SimpleNamespace(returncode=0, stdout="x" * 65537),
+                   SimpleNamespace(returncode=0, stdout="[]"), subprocess.TimeoutExpired(["docker", "exec"], 5)]
+        for result in results:
+            with self.subTest(result=type(result).__name__), tempfile.TemporaryDirectory() as directory:
+                controller = self.controller(directory)
+                kwargs = {"side_effect": result} if isinstance(result, Exception) else {"return_value": result}
+                with patch.object(controller, "call", **kwargs) as call, \
+                        self.assertRaises((validation.ValidationError, subprocess.TimeoutExpired)):
+                    controller.read_ready("fixture-container", validation.READY)
+                self.assertEqual(call.call_count, 1)
+
+    def test_stage_cannot_release_after_inside_or_started_policy_failure_and_still_cleans(self):
+        for failure in ("inside", "started"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory:
+                controller = self.controller(directory)
+                checks = dict.fromkeys(validation.INNER_CHECKS, True)
+                if failure == "inside":
+                    checks["seccomp"] = False
+                ready = {"schema": validation.SCHEMA, "status": "PASS", "security": checks}
+                def create(name, **_kwargs):
+                    controller.containers.add(name)
+                with patch.object(controller, "create", side_effect=create), patch.object(controller, "call"), \
+                        patch.object(controller, "read_ready", return_value=ready), \
+                        patch.object(controller, "inspect", side_effect=validation.ValidationError("started_policy_failed")), \
+                        patch.object(controller, "release") as release, patch.object(controller, "cleanup") as cleanup, \
+                        self.assertRaises(validation.ValidationError):
+                    controller.stage("download")
+                release.assert_not_called()
+                cleanup.assert_called_once()
+
+
 class CancellationCleanup(unittest.TestCase):
     def test_labels_use_the_actual_run_and_attempt_and_are_unique_locally(self):
         with patch.dict(os.environ, {"GITHUB_RUN_ID": "1234", "GITHUB_RUN_ATTEMPT": "2"}, clear=True):
