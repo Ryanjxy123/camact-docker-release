@@ -1,5 +1,7 @@
 **
 !Dockerfile
+# Offline policy tests read the same production Compose source inside the image.
+!compose.yaml
 !deploy/
 deploy/*
 !deploy/seccomp-gvisor.json

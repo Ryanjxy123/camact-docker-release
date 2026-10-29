@@ -26,6 +26,27 @@ def result(code=0, stdout="", stderr="", number=None, timeout=False):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_packaged_compose_references_packaged_policy_and_storage_entrypoint(self):
+        import yaml
+        source = yaml.safe_load((PROJECT / 'compose.yaml').read_text())
+        runner = source['services']['runner']
+        self.assertEqual(runner['security_opt'], ['no-new-privileges:true',
+            'seccomp=./deploy/seccomp-gvisor.json', 'apparmor=camact-gvisor-v1'])
+        seccomp = PROJECT / runner['security_opt'][1].split('=', 1)[1]
+        self.assertEqual(json.loads(seccomp.read_text())['defaultAction'], 'SCMP_ACT_ERRNO')
+        profile = runner['security_opt'][2].split('=', 1)[1]
+        self.assertIn('profile ' + profile + ' ', (PROJECT / 'deploy' / (profile + '.profile')).read_text())
+        entrypoint = source['services']['storage-init']['entrypoint']
+        self.assertEqual(entrypoint[:2], ['python', '-B'])
+        storage = PROJECT / Path(entrypoint[2]).relative_to('/opt/camact')
+        self.assertTrue(storage.is_file(), 'Compose storage entrypoint is absent from the release layout')
+        # Packaging the public Compose source must keep credentials as external
+        # references, resolved only when the host starts a deployment.
+        self.assertEqual(runner['env_file'], ['./config/models.env'])
+        for role in ('agent', 'judge', 'simulator'):
+            name = role + '_api_key'
+            self.assertEqual(source['secrets'][name]['file'], '${CAMACT_SECRETS_DIR:-./.secrets}/' + name)
+
     def test_compose_source_requires_the_production_named_apparmor_before_diagnostic_override(self):
         import yaml
         service = yaml.safe_load((PROJECT / 'compose.yaml').read_text())['services']['runner']
