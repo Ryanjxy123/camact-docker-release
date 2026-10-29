@@ -42,6 +42,11 @@ DIRECT_ASSIGNMENT_RE = re.compile(
     r"\s*[:=]\s*[\"']?([^\s\"'\x60;,}]*)"
 )
 NUMERIC_GATEWAY_RE = re.compile(r"https?://(\d+\.\d+\.\d+\.\d+)(?::\d+)?")
+RUNTIME_SECRET_FILES = {
+    "AGENT_API_KEY_FILE": "/run/secrets/agent_api_key",
+    "JUDGE_API_KEY_FILE": "/run/secrets/judge_api_key",
+    "SIMULATOR_API_KEY_FILE": "/run/secrets/simulator_api_key",
+}
 
 _spec = importlib.util.spec_from_file_location("release_scanner", Path(__file__).with_name("scan-release.py"))
 _release_scanner = importlib.util.module_from_spec(_spec)
@@ -164,6 +169,25 @@ def safe_name(name):
     return "/".join(path.parts)
 
 
+def trusted_compose_secret_reference(text, match, location):
+    """Recognize only the production Compose contract's literal file references."""
+    if not re.fullmatch(r"layer\[\d+\]:opt/camact/compose\.yaml", location):
+        return False
+    path = RUNTIME_SECRET_FILES.get(match.group(1))
+    if path is None:
+        return False
+    start = text.rfind("\n", 0, match.start(1)) + 1
+    end = text.find("\n", match.end(1))
+    # A chunk ending in a safe prefix does not prove a complete YAML scalar.
+    # Fail closed without its newline, including at EOF; this file has one.
+    if end < 0:
+        return False
+    path = re.escape(path)
+    return re.fullmatch(r"[ \t]*" + re.escape(match.group(1)) + r":[ \t]*(?:"
+                        + path + "|'" + path + "'|\"" + path + r'\")'
+                        + r"(?:[ \t]+#[^\r\n]*)?[ \t]*\r?", text[start:end]) is not None
+
+
 def scan_text(text, location, issues, metadata=False):
     for kind, pattern in _release_scanner.SECRET_PATTERNS.items():
         for match in pattern.finditer(text):
@@ -177,6 +201,8 @@ def scan_text(text, location, issues, metadata=False):
             add_issue(issues, location, "numeric_gateway", match.group())
     assignments = ASSIGNMENT_RE if metadata else DIRECT_ASSIGNMENT_RE
     for match in assignments.finditer(text):
+        if not metadata and trusted_compose_secret_reference(text, match, location):
+            continue
         value = match.group(2)
         placeholders = {"placeholder", "changeme", "test", "<redacted>", "$" + "{VAR}", "$" + "{KEY}",
                        "0", "1", "true", "false", "none", "null", "unset",

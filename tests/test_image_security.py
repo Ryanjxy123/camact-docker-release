@@ -303,6 +303,104 @@ class ImageSecurityScannerTests(unittest.TestCase):
         self.assertEqual(result["issue_count"], 0)
         self.assertFalse(result["candidate_values_printed"])
 
+    def test_production_compose_runtime_secret_references_pass(self):
+        code, result = run_scan(image_archive(layers=[tar_payload([
+            ("opt/camact/compose.yaml", (ROOT / "compose.yaml").read_bytes()),
+        ])]))
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result["issue_count"], 0)
+
+    def test_only_complete_trusted_compose_secret_file_assignments_pass(self):
+        for role in ("agent", "judge", "simulator"):
+            name = role.upper() + "_API_KEY_FILE"
+            path = "/run/secrets/" + role + "_api_key"
+            for quote in ("", "'", '"'):
+                with self.subTest(role=role, quote=quote):
+                    issues = []
+                    scanner.scan_text("\n\t " + name + ": " + quote + path + quote
+                                      + "  # runtime mount\r\n",
+                                      "layer[6]:opt/camact/compose.yaml", issues)
+                    self.assertEqual(issues, [])
+
+    def test_untrusted_secret_file_assignments_still_fail_without_values(self):
+        for role in ("agent", "judge", "simulator"):
+            name = role.upper() + "_API_KEY_FILE"
+            path = "/run/secrets/" + role + "_api_key"
+            cases = [
+                name + ": opaque-hardcoded-value\n",
+                name + ": " + SYNTHETIC_KEY + "\n",
+                name + ": /tmp/" + role + "_api_key\n",
+                name + ": /run/secrets/../" + role + "_api_key\n",
+                name + ": /run/secrets//" + role + "_api_key\n",
+                name + ": " + path + "/extra\n",
+                name + ": " + path + ".backup\n",
+                name + ": " + path + "?value=opaque-hardcoded-value\n",
+                name + ": " + path + " extra-value\n",
+                name + ": \"" + path + "\" + opaque-hardcoded-value\n",
+                name + ": \"" + path + " opaque-hardcoded-value\"\n",
+                name + ": '" + path + "\"\n",
+                name + ": " + path + "#opaque-hardcoded-value\n",
+                name + "=" + path + "\n",
+                "export " + name + "=" + path + "\n",
+                "ENV " + name + "=" + path + "\n",
+                name + ": " + path,  # A chunk ending here does not prove a complete line.
+                name + ": " + path + " " * (scanner.TAIL_SIZE + 1),
+                name + ": /run/secrets/other_api_key\n",
+                name + ": /run/secrets/" + ("judge" if role == "agent" else "agent") + "_api_key\n",
+                role.upper() + "_API_KEY: " + path + "\n",
+                "OTHER_API_KEY_FILE: " + path + "\n",
+            ]
+            for number, text in enumerate(cases):
+                with self.subTest(role=role, case=number):
+                    issues = []
+                    scanner.scan_text(text, "layer[6]:opt/camact/compose.yaml", issues)
+                    self.assertIn("nonempty_secret_assignment", {item["kind"] for item in issues})
+                    self.assertNotIn("opaque-hardcoded-value", json.dumps(issues))
+                    self.assertNotIn(SYNTHETIC_KEY, json.dumps(issues))
+
+    def test_runtime_secret_reference_trust_does_not_extend_to_other_locations_or_metadata(self):
+        text = "AGENT_API_KEY_FILE: /run/secrets/agent_api_key\n"
+        for location, metadata in (("layer[6]:opt/camact/other.yaml", False),
+                                   ("layer[6]:tmp/compose.yaml", False),
+                                   ("layer[6]:opt/camact/compose.yaml.backup", False),
+                                   ("layer[6]:opt/camact/compose.yaml", True),
+                                   ("config[0].Env[0]", True),
+                                   ("config[0].history[0]", True),
+                                   ("config[0].labels[0]", True)):
+            with self.subTest(location=location, metadata=metadata):
+                issues = []
+                scanner.scan_text(text, location, issues, metadata=metadata)
+                expected = "nonempty_secret_metadata" if metadata else "nonempty_secret_assignment"
+                self.assertIn(expected, {item["kind"] for item in issues})
+
+    def test_compose_reference_does_not_hide_embedded_secrets_or_secret_file_contents(self):
+        text = (ROOT / "compose.yaml").read_bytes()
+        for extra, expected in ((b"\n      SERVICE_API_KEY: opaque-hardcoded-value\n", "nonempty_secret_assignment"),
+                                (b"\n# " + SYNTHETIC_KEY.encode() + b"\n", "provider_key"),
+                                (b"\n# -----BEGIN " + b"PRIVATE KEY-----\n", "private_key"),
+                                (b"\n# https://" + b"198.51.100.23/api\n", "numeric_gateway")):
+            with self.subTest(expected=expected):
+                code, result = run_scan(image_archive(layers=[tar_payload([
+                    ("opt/camact/compose.yaml", text + extra),
+                ])]))
+                self.assertNotEqual(code, 0)
+                self.assertIn(expected, {item["kind"] for item in result["issues"]})
+                self.assertNotIn(SYNTHETIC_KEY, json.dumps(result))
+                self.assertNotIn("opaque-hardcoded-value", json.dumps(result))
+        code, result = run_scan(image_archive(layers=[tar_payload([
+            ("opt/camact/compose.yaml", text), ("run/secrets/agent_api_key", b"opaque-hardcoded-value"),
+        ])]))
+        self.assertNotEqual(code, 0)
+        self.assertIn("nonempty_runtime_secret_path", {item["kind"] for item in result["issues"]})
+
+    def test_chunk_boundary_does_not_turn_an_incomplete_reference_into_a_trusted_line(self):
+        prefix = b"AGENT_API_KEY_FILE: /run/secrets/agent_api_key"
+        data = prefix + b" " * (scanner.CHUNK_SIZE - len(prefix)) + b"opaque-hardcoded-value\n"
+        code, result = run_scan(image_archive(layers=[tar_payload([("opt/camact/compose.yaml", data)])]))
+        self.assertNotEqual(code, 0)
+        self.assertIn("nonempty_secret_assignment", {item["kind"] for item in result["issues"]})
+        self.assertNotIn("opaque-hardcoded-value", json.dumps(result))
+
     def test_chunk_boundary_does_not_hide_binary_secret(self):
         data = b"\0" * (scanner.CHUNK_SIZE - 7) + SYNTHETIC_KEY.encode() + b"\0"
         code, result = run_scan(image_archive(layers=[tar_payload([("usr/bin/tool", data)])]))
