@@ -40,7 +40,8 @@ NATIVE_ASSERTIONS = {
     "native_tool_assertions": {"readonly_resources_and_no_secrets", "rejected_invalid_business_actions", "history_context"},
     "token_accounting_assertions": {"agent_request_count", "agent_capture_complete", "agent_usage_complete",
         "agent_tokens_exact", "all_roles_request_count", "all_roles_tokens_exact", "all_roles_capture_complete", "formal_evaluation_linked"},
-    "sandbox_lifecycle_assertions": {"production_gvisor_executed", "all_states_removed", "trusted_credentials_absent"},
+    "sandbox_lifecycle_assertions": {"production_gvisor_executed", "all_states_removed", "trusted_credentials_absent",
+                                     "execution_plan_pairs_verified"},
 }
 
 
@@ -117,12 +118,12 @@ finally:
     (root/'native-artifact-index.json').write_text(json.dumps(index)+'\n')
 sys.exit(rc)
 '''
-# These files configure the host-side diagnostic only. The in-image probe,
-# every runtime/core module, Dockerfile, Compose, scanner and lock stay critical.
+# These files configure the host-side diagnostic only. This controller's
+# classifier is also imported by in-image native acceptance and stays critical.
+# Every runtime/core module, Dockerfile, Compose, scanner and lock stays critical.
 REUSE_SAFE_FILES = frozenset({
     ".github/workflows/diagnose-gvisor.yml",
     "scripts/diagnostic/camact-gvisor-diagnostic-v1.profile",
-    "scripts/diagnostic/production-plan-controller.py",
     "tests/test_production_plan_controller.py",
 })
 INNER_REQUIRED = {
@@ -144,7 +145,7 @@ def command(argv, timeout=20):
 
 
 def critical_source_digest(revision):
-    """Hash the committed tree, excluding only four reviewed host-side files.
+    """Hash the committed tree, excluding only three reviewed host-side files.
 
     Quoted Git paths make newlines and arbitrary filename bytes unambiguous
     despite the shared command helper's text interface. No blob is executed.
@@ -429,6 +430,24 @@ def classify_native_plans(evidence, harness, case_output):
     return classification, errors
 
 
+def native_lifecycle_errors(lifecycles, state_parent):
+    """Require complete recorded execution evidence without changing CLI exits."""
+    errors = []
+    for name, item in lifecycles.items():
+        state = item.get("state") if isinstance(item, dict) else None
+        path = PurePosixPath(state) if isinstance(state, str) else None
+        if (not isinstance(item, dict) or item.get("backend") != "gvisor" or item.get("platform") != "systrap"
+                or item.get("network") != "none" or item.get("host_proc_bound") is not False
+                or type(item.get("returncode")) is not int or type(item.get("parent_disconnected")) is not bool
+                or item.get("cleanup_returncode") != 0 or item.get("state_removed") is not True
+                or path is None or state != path.as_posix() or path.parent != PurePosixPath(state_parent)
+                or not re.fullmatch(r"run-[A-Za-z0-9_-]+", path.name)
+                or not isinstance(item.get("guest_environment_keys"), list)
+                or any(not isinstance(key, str) or trusted_environment_name(key) for key in item.get("guest_environment_keys", []))):
+            errors.append("sandbox_lifecycle:" + name)
+    return errors
+
+
 def validate_native(evidence, harness, mode, case_output):
     """Keep the existing smoke assertions and verify their retained evidence."""
     errors = []
@@ -512,15 +531,7 @@ def validate_native(evidence, harness, mode, case_output):
                 or any(not isinstance(mount.get("source"), str) or not mount["source"].startswith(case_output + "/")
                        or ".." in PurePosixPath(mount["source"]).parts for mount in workspace)):
             errors.append("workspace_case_identity:" + name)
-    for name, item in lifecycles.items():
-        if (not isinstance(item, dict) or item.get("backend") != "gvisor" or item.get("platform") != "systrap"
-                or item.get("network") != "none" or item.get("host_proc_bound") is not False
-                or type(item.get("returncode")) is not int or type(item.get("parent_disconnected")) is not bool
-                or item.get("cleanup_returncode") != 0 or item.get("state_removed") is not True
-                or not str(item.get("state", "")).startswith(state_parent + "/run-")
-                or not isinstance(item.get("guest_environment_keys"), list)
-                or any(not isinstance(key, str) or trusted_environment_name(key) for key in item.get("guest_environment_keys", []))):
-            errors.append("sandbox_lifecycle:" + name)
+    errors.extend(native_lifecycle_errors(lifecycles, state_parent))
     turns = [value for name, value in evidence.items() if name.endswith("/turn.json")]
     conversations = [value for name, value in evidence.items() if name.endswith("/native_conversation.json")]
     native_records = (any(isinstance(item, dict) and isinstance(item.get("invocations"), list) and item["invocations"]
@@ -643,7 +654,8 @@ class Controller:
         runner, storage = source["services"]["runner"], source["services"]["storage-init"]
         runner_ok = (runner.get("user") == "10001:10001" and runner.get("cap_drop") == ["ALL"]
                      and not runner.get("cap_add") and runner.get("read_only") is True
-                     and runner.get("security_opt") == ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json"]
+                     and runner.get("security_opt") == ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json",
+                                                       "apparmor=camact-gvisor-v1"]
                      and runner.get("pids_limit") == 4096 and runner.get("platform") == "linux/amd64"
                      and not any(runner.get(key) for key in ("privileged", "env_file", "environment", "secrets", "volumes")))
         storage_ok = (storage.get("user") == "0:0" and storage.get("cap_drop") == ["ALL"]

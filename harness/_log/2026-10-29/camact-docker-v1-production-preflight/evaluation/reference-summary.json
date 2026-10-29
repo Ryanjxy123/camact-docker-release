@@ -1,0 +1,161 @@
+{
+  "schema": "camact.production-reference-summary.v1",
+  "audit_date": "2026-10-29",
+  "repository": "Ryanjxy123/camact-docker-release",
+  "source_reference": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+  "historical_artifacts": [
+    {
+      "run_id": 40766742381,
+      "source_revision": "857454199d169d5614f0dd4fe50b96a822c0d2ac",
+      "run_conclusion": "success",
+      "artifact_id": 12850627737,
+      "artifact_name": "gvisor-production-plan-diagnostics",
+      "official_api_sha256": "10a1c7046800f26b910b376c8b82fd83857496d84caeca01d416a840ab583dda",
+      "downloaded_zip_sha256": "10a1c7046800f26b910b376c8b82fd83857496d84caeca01d416a840ab583dda",
+      "sha256_match": true,
+      "download_method": "public nightly.link mirror; verified against official GitHub API digest",
+      "evidence_directory": "runs/reference-actions/40766742381/gvisor-production-plan-diagnostics"
+    },
+    {
+      "run_id": 40780971849,
+      "source_revision": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+      "run_conclusion": "success",
+      "artifact_id": 12859140192,
+      "artifact_name": "docker-verification-diagnostics",
+      "official_api_sha256": "0834abe803b8f3571502a65a549c22ee3f0286cee8d47406aa7bfe197f625e5b",
+      "downloaded_zip_sha256": "0834abe803b8f3571502a65a549c22ee3f0286cee8d47406aa7bfe197f625e5b",
+      "sha256_match": true,
+      "download_method": "public nightly.link mirror; verified against official GitHub API digest",
+      "evidence_directory": "runs/reference-actions/40780971849/docker-verification-diagnostics"
+    },
+    {
+      "run_id": 40785245242,
+      "source_revision": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+      "run_conclusion": "success",
+      "artifact_id": 12866002847,
+      "artifact_name": "full-cache-validation",
+      "official_api_sha256": "aa9ca068a74170aa81d5e937bf0c42e0113a60dbd1a67bd3c9a52daed6e3abef",
+      "downloaded_zip_sha256": "aa9ca068a74170aa81d5e937bf0c42e0113a60dbd1a67bd3c9a52daed6e3abef",
+      "sha256_match": true,
+      "download_method": "public nightly.link mirror; verified against official GitHub API digest",
+      "evidence_directory": "runs/reference-actions/40785245242/full-cache-validation"
+    },
+    {
+      "run_id": 40785245647,
+      "source_revision": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+      "run_conclusion": "success",
+      "artifact_id": 12859720698,
+      "artifact_name": "docker-recovery-validation",
+      "official_api_sha256": "6cfafbd164b206de6e234eda6675c7a2c611c22526dd174c5a722d9a7e1b335a",
+      "downloaded_zip_sha256": "6cfafbd164b206de6e234eda6675c7a2c611c22526dd174c5a722d9a7e1b335a",
+      "sha256_match": true,
+      "download_method": "public nightly.link mirror; verified against official GitHub API digest",
+      "evidence_directory": "runs/reference-actions/40785245647/docker-recovery-validation"
+    }
+  ],
+  "historical_verified_results": {
+    "independent_gvisor": {
+      "checks_passed": 496,
+      "native_cases_passed": 15,
+      "source_revision": "857454199d169d5614f0dd4fe50b96a822c0d2ac"
+    },
+    "formal_docker": {
+      "offline_tests_per_pass": 336,
+      "passes": 2,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "native_cases_passed": 15,
+      "image_scan": "PASS",
+      "publish_job": "skipped"
+    },
+    "full_hf_cache": {
+      "checks_passed": 36,
+      "stages": [
+        "download",
+        "offline-1",
+        "offline-2"
+      ],
+      "file_count": 22121,
+      "total_bytes": 2350271484,
+      "benchmark_revision": "53e2f450042485dfc4a3b566de6f46988c3a5661",
+      "memory_tasks": 540,
+      "memory_users": 20,
+      "all_offline_external_call_counters_zero": true,
+      "cleanup_remaining_containers": 0
+    },
+    "docker_recovery": {
+      "checks_passed": 80,
+      "cases": [
+        "stop",
+        "kill"
+      ],
+      "completed_task_artifacts_unchanged": true,
+      "interrupted_task_status": "infrastructure_error",
+      "interrupted_task_replayed": false,
+      "subsequent_task_scored": true,
+      "second_resume_idempotent": true,
+      "expected_resume_exit_code": 3,
+      "cleanup_remaining_containers": 0
+    }
+  },
+  "cli_compatibility": {
+    "result": "PASS",
+    "matrices": [
+      {
+        "name": "hosted-reference",
+        "versions": {
+          "docker": "28.0.4",
+          "compose": "2.38.2",
+          "buildx": "0.38.1"
+        },
+        "checks_passed": 19,
+        "checks_total": 19,
+        "result": "PASS"
+      },
+      {
+        "name": "installer-pins",
+        "versions": {
+          "docker": "28.5.1",
+          "compose": "2.40.3",
+          "buildx": "0.29.1"
+        },
+        "checks_passed": 19,
+        "checks_total": 19,
+        "result": "PASS"
+      }
+    ],
+    "covered": [
+      "Official checksum and actual CLI versions",
+      "Exact production camactctl init in isolated copied input files",
+      "Explicit storage-init config with and without tools profile",
+      "Default runner-only service selection and tools profile inclusion",
+      "Full-cache !reset override, no-env-resolution/no-consistency and credential removal",
+      "Supported create --no-build --pull never parsed before deliberate missing daemon",
+      "Historical unsupported --no-deps rejected on both versions",
+      "Required Docker create, Compose config and Buildx build flags"
+    ]
+  },
+  "limitations": [
+    "Historical passing Actions used GitHub-hosted ubuntu-24.04, not the current Kubernetes server.",
+    "Hosted Docker 28.0.4 / Compose 2.38.2 / Buildx 0.38.1 versions come from the user-provided successful-run record; downloaded aggregate artifacts do not independently expose host tool versions.",
+    "Anonymous workflow-log ZIP API returned HTTP403; artifact API returned HTTP401. Four diagnostic ZIPs were obtained through a public mirror and verified against official GitHub artifact digests. Full raw workflow logs were not obtained.",
+    "Docker CLI tests used same-version official Ubuntu CE CLI packages, verified against official Packages SHA256; they do not execute or prove the installer static daemon. Compose and Buildx used official release checksums.",
+    "CLI tests prove parsing/configuration only. No daemon, container, image build, AppArmor load, nested runsc, full HF container transfer or Docker stop/kill/resume ran locally. Fresh fixed-version host installation remains unverified.",
+    "Initial CLI fixture used an overlong absent Unix socket path; all19 checks in both matrices were rerun with short unique paths and passed. This was a fixture error.",
+    "Current modified source requires a newly built image and fresh same-SHA manual publish=false, full-cache and recovery workflow runs; historical results do not certify the new candidate."
+  ],
+  "side_effects": {
+    "workflow_dispatches": 0,
+    "registry_publishes": 0,
+    "paid_model_calls": 0,
+    "canonical_benchmark_executions": 0,
+    "formal_workflow_edits": 0
+  },
+  "documentation_review": {
+    "workflow_names_and_inputs_match": true,
+    "same_sha_image_requirement_matches": true,
+    "version_compatibility_limits_explicit": true,
+    "historical_counts_match_downloaded_artifacts": true
+  }
+}

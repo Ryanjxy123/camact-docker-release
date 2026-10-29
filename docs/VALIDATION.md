@@ -1,6 +1,23 @@
 # 发布验收记录
 
-验收日期：2026-10-29。镜像发布结论：**NOT_READY_TO_PUBLISH**，等待云端诊断及完整 Docker Actions 验收。
+审查日期：2026-10-29。服务器正式目录已从 `3c613d50c9e868b298bedb31cad173bc475ef680` 快进同步到成功版本 `b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85`，保留全部 12 个成功修复提交。随后仅修复诊断脚本对生产 AppArmor 配置的旧断言，以及 Native 合成验收遗漏 plan 的问题；没有修改核心 Harness、评分、Benchmark 或依赖锁。
+
+当前结论：**可以手动启动新候选验收，保持 `publish=false`；新候选尚未获得真实 Docker 验收。** 参考版本的通过证据不能替代修改后的镜像验收。完整报告、版本边界与本轮检查见 [生产部署审查归档](../harness/_log/2026-10-29/camact-docker-v1-production-preflight/README.md)。
+
+已读取真实源码、公开 Actions API 和 SHA-256 与官方 API 一致的诊断 Artifact：
+
+| 参考运行 | 实际源码 | 实际证据 |
+| --- | --- | --- |
+| [独立 gVisor](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40766742381) | `857454199d169d5614f0dd4fe50b96a822c0d2ac` | 496 项检查、15 个 Native 用例；不误记为 `b0592d2` |
+| [正式 Docker](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40780971849) | `b0592d2` | 断网与 Compose 两轮各 336 项离线测试、15 个 Native 用例及镜像扫描通过；GHCR 分支跳过 |
+| [完整 HF 缓存](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40785245242) | `b0592d2` | 22,121 文件、2,350,271,484 字节；下载及两个新容器离线复用、540 Task / 20 User Memory 路径通过 |
+| [stop/kill/resume](https://github.com/Ryanjxy123/camact-docker-release/actions/runs/40785245647) | `b0592d2` | 已完成任务不重放、中断任务保留 infrastructure_error、重复 resume 幂等和零容器残留通过 |
+
+原始 Actions 日志 API 需要认证，本机未配置 REST Token；本轮未取得完整日志 ZIP。小型诊断 Artifact 经公开代理取得并与 GitHub 官方 digest 逐一匹配，已归档原始 ZIP、解压文件、API 元数据和完整性清单，没有下载或发布大镜像。
+
+本机为 Kubernetes 容器，项目存储为 NFS；无可用 Docker Socket/Daemon、无有效 capabilities、无可读 AppArmor profile 列表。user namespace 单独可用不代表可启动 Docker；直接 mount namespace 探针被 EPERM 拒绝。权限敏感离线回归在私有 Linux overlay 副本执行。真实 Docker 构建、具名 profile 加载、Compose 挂载与 UID、容器内 gVisor、全量 HF 跨容器复用和 stop/kill/resume 本轮均未在本机重验。
+
+下文为早期验收历史，版本、测试数量、未推送状态及当时的阻塞结论仅适用于各自历史提交。
 
 ## Run #5 缓存修复与诊断
 

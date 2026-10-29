@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import copy
 import http.server
+import importlib.util
 import ipaddress
 import json
 import os
@@ -65,6 +66,64 @@ def accounting_assertions(report, name, agent_calls, simulator_calls):
         'formal_evaluation_linked': report['formal_results'][name]['scored_tasks'] == 1
             and report['formal_results'][name]['strict_success_count'] == 1,
     }
+
+
+def native_plan_classification(output, harness):
+    """Use the independently validated classifier on all launch evidence."""
+    spec = importlib.util.spec_from_file_location('native_smoke_plan_classifier',
+        ROOT / 'scripts/diagnostic/production-plan-controller.py')
+    classifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(classifier)
+    # The classifier proves the fixed release layout. Preserve the documented
+    # host smoke command by mapping only this checkout and its exact Python
+    # gVisor launcher to that layout; foreign roots/interpreters stay rejected.
+    source = str(ROOT)
+    wrapper = str(ROOT / 'harness/camact_multi_harness_v1/camact_multi/gvisor.py')
+    preflight = ([str(Path('/usr/bin/python3').resolve(strict=True)), '-c', classifier.openclaw_preflight_code()]
+                 if harness == 'openclaw' else None)
+    def normalized(value):
+        if isinstance(value, dict):
+            return {key: normalized(item) for key, item in value.items()}
+        if isinstance(value, list):
+            result = [normalized(item) for item in value]
+            if len(value) == 4 and value[:3] == [sys.executable, '-B', wrapper]:
+                result[0] = '/usr/local/bin/python'
+            # The unchanged OpenClaw builder invokes /usr/bin/python3, which
+            # gVisor resolves to the host's versioned system binary. Normalize
+            # only that resolved binary with the exact source-proven probe.
+            if value == preflight:
+                result[0] = '/usr/bin/python3'
+            return result
+        if isinstance(value, str) and (value == source or value.startswith(source + '/')):
+            return '/opt/camact' + value[len(source):]
+        return value
+    run = output / 'run'
+    paths = {*run.rglob('sandbox-launches/*/plan.json'),
+             *run.rglob('sandbox-launches/*/lifecycle.json'),
+             *run.rglob('native_turns/*/turn.json'),
+             *run.rglob('native_conversation.json')}
+    launch = run / 'runs/execution/launch.json'
+    if launch.is_file():
+        paths.add(launch)
+    evidence, resolutions = {}, []
+    for path in sorted(paths):
+        if path.is_symlink():
+            raise ValueError('Native launch evidence must not be a symbolic link')
+        name = path.relative_to(output).as_posix()
+        value = json.loads(path.read_text())
+        evidence[name] = value
+        if path.name == 'turn.json':
+            original = value.get('argv', [None])[0]
+            if isinstance(original, str) and original.startswith(str(ROOT / '.tools' / harness) + '/'):
+                resolutions.append({'artifact': name, 'original': original,
+                    'resolved': str(Path(original).resolve(strict=True))})
+    evidence['native-artifact-index.json'] = {'native_executable_resolutions': resolutions}
+    evidence = normalized(evidence)
+    classification, errors = classifier.classify_native_plans(evidence, harness, normalized(str(output)))
+    lifecycles = {name.rsplit('/', 1)[0]: value for name, value in evidence.items()
+                  if name.endswith('/lifecycle.json') and '/sandbox-launches/' in name}
+    errors.extend(classifier.native_lifecycle_errors(lifecycles, normalized(str(output.parent / 'gvisor-state'))))
+    return classification, errors
 
 
 def worker(args):
@@ -217,8 +276,12 @@ print('CAMACT_HISTORY_OK')
         accounting = json.loads((output / 'run/token_usage/accounting_v3/summary.json').read_text())
         row['token_accounting_assertions'] = accounting_assertions(accounting, name, server.agent_calls, server.simulator_calls)
         lifecycles = [json.loads(path.read_text()) for path in (output / 'run').rglob('sandbox-launches/*/lifecycle.json')]
+        classification, plan_errors = native_plan_classification(output, name)
+        row['sandbox_plan_classification'] = classification
+        row['sandbox_plan_errors'] = plan_errors
         row['sandbox_lifecycle_assertions'] = {
             'production_gvisor_executed': bool(lifecycles),
+            'execution_plan_pairs_verified': not plan_errors,
             'all_states_removed': bool(lifecycles) and all(item['cleanup_returncode'] == 0 and item['state_removed'] for item in lifecycles),
             'trusted_credentials_absent': bool(lifecycles) and not any(trusted_secret_name(key)
                 for item in lifecycles for key in item['guest_environment_keys']),

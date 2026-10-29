@@ -5,6 +5,7 @@ import importlib.util
 import hashlib
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -21,6 +22,7 @@ SOURCE_REVISION = "c" * 40
 BASE_TREE = {
     "harness/camact_multi_harness_v1/camact_multi/gvisor.py": ("100644", "blob", "1" * 40),
     "scripts/diagnostic/production-plan-probe.py": ("100644", "blob", "2" * 40),
+    "scripts/diagnostic/production-plan-controller.py": ("100644", "blob", "8" * 40),
     "locks/runtimes.json": ("100644", "blob", "3" * 40),
     "scripts/scan-image.py": ("100644", "blob", "4" * 40),
     "compose.yaml": ("100644", "blob", "5" * 40),
@@ -67,7 +69,7 @@ def inner_report(check_runtimes=True):
 def compose():
     return {"services": {
         "runner": {"user": "10001:10001", "cap_drop": ["ALL"], "read_only": True,
-            "security_opt": ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json"],
+            "security_opt": ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json", "apparmor=camact-gvisor-v1"],
             "pids_limit": 4096, "platform": "linux/amd64", "tmpfs": [
                 "/run/camact:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700",
                 "/run/camact/openclaw:rw,nosuid,nodev,size=256m,uid=10001,gid=10001,mode=0700",
@@ -308,11 +310,10 @@ class SourceDigestTests(unittest.TestCase):
         with mock.patch.object(controller.diag, "command", side_effect=fixture):
             return controller.critical_source_digest(revision)
 
-    def test_only_the_four_reviewed_host_files_are_excluded(self):
+    def test_only_the_three_reviewed_host_files_are_excluded(self):
         self.assertEqual(controller.REUSE_SAFE_FILES, {
             ".github/workflows/diagnose-gvisor.yml",
             "scripts/diagnostic/camact-gvisor-diagnostic-v1.profile",
-            "scripts/diagnostic/production-plan-controller.py",
             "tests/test_production_plan_controller.py",
         })
         fixture = DockerFixture()
@@ -929,6 +930,18 @@ class ControllerTests(unittest.TestCase):
         self.assertEqual(report["outcome"], "FAIL")
         self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
 
+    def test_production_compose_named_apparmor_is_required_before_diagnostic_storage(self):
+        expected = compose()["services"]["runner"]["security_opt"]
+        for security in (expected[:-1], expected + ["apparmor=unexpected"],
+                         [*expected[:-1], "apparmor=unconfined"],
+                         [*expected[:-1], "apparmor=camact-gvisor-diagnostic-v1"]):
+            with self.subTest(security=security):
+                fixture = DockerFixture()
+                fixture.source["services"]["runner"]["security_opt"] = security
+                report, _ = self.invoke(fixture)
+                self.assertEqual(report["outcome"], "FAIL")
+                self.assertFalse(any(argv[:2] == ["docker", "create"] for argv in fixture.calls))
+
     def test_actual_runner_privilege_drift_prevents_start_and_cleans(self):
         for field, value in (("cap_add", ["SYS_ADMIN"]), ("read_only", False), ("network", "host"),
                              ("user", "0:0"), ("pids_limit", 0)):
@@ -996,6 +1009,126 @@ class ControllerTests(unittest.TestCase):
             self.assertTrue(controller.mount_matches(actual, expected))
             actual.append({"Type": "bind", "Source": "/", "Destination": "/host", "RW": True})
             self.assertFalse(controller.mount_matches(actual, expected))
+
+
+class NativeSmokePlanTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('native_smoke_plan_tests', ROOT / 'scripts/native-loop-smoke.py')
+        cls.smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.smoke)
+
+    def classify(self, harness, mode='single_turn', mutate=None):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / (harness + '-' + mode)
+            values = native_evidence(harness, mode, str(output))
+            # Exercise the documented host command from this actual checkout;
+            # only its own runtime roots/interpreter may map to release paths.
+            def host_paths(value):
+                if isinstance(value, dict):
+                    return {key: host_paths(item) for key, item in value.items()}
+                if isinstance(value, list):
+                    result = [host_paths(item) for item in value]
+                    if len(value) == 4 and value[1:3] == ['-B', '/opt/camact/harness/camact_multi_harness_v1/camact_multi/gvisor.py']:
+                        result[0] = sys.executable
+                    if len(value) == 3 and value[:2] == ['/usr/local/bin/python3.13', '-c']:
+                        result[0] = str(Path('/usr/bin/python3').resolve(strict=True))
+                    return result
+                if isinstance(value, str) and value.startswith('/opt/camact/'):
+                    return str(ROOT) + value[len('/opt/camact'):]
+                return value
+            values = host_paths(values)
+            if mutate:
+                mutate(values)
+            for name, value in values.items():
+                path = output / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(evidence_bytes(name, value))
+            resolutions = {item['original']: item['resolved']
+                for item in values['native-artifact-index.json']['native_executable_resolutions']}
+            real_resolve = Path.resolve
+            def resolve(path, *args, **kwargs):
+                return Path(resolutions[str(path)]) if str(path) in resolutions else real_resolve(path, *args, **kwargs)
+            with mock.patch.object(Path, 'resolve', resolve):
+                return self.smoke.native_plan_classification(output, harness)
+
+    def test_all_fifteen_native_cases_preserve_real_executions_and_source_proven_previews(self):
+        for harness, mode in controller.NATIVE_CASES:
+            with self.subTest(harness=harness, mode=mode):
+                classification, errors = self.classify(harness, mode)
+                self.assertEqual(errors, [])
+                self.assertEqual(len(classification['executed']), 2 if harness == 'openclaw' else 1)
+                self.assertEqual(len(classification['planned_unexecuted']), 0 if harness == 'claude' else 1)
+                self.assertTrue(all(item['lifecycle_present'] is False for item in classification['planned_unexecuted']))
+
+    def test_unknown_orphans_and_missing_executed_lifecycles_fail_for_every_cli(self):
+        base = 'run/runs/execution/sandbox-launches/'
+        mutations = (
+            lambda values: values.update({base + 'unknown/plan.json': values[base + 'fixture/plan.json']}),
+            lambda values: values.pop(base + 'fixture/lifecycle.json'),
+            lambda values: values.update({base + 'unknown/lifecycle.json': values[base + 'fixture/lifecycle.json']}),
+        )
+        for harness in controller.NATIVE_EXECUTABLES:
+            for number, mutate in enumerate(mutations):
+                with self.subTest(harness=harness, mutation=number):
+                    _, errors = self.classify(harness, mutate=mutate)
+                    self.assertTrue(errors)
+
+    def test_preview_cannot_gain_a_fabricated_lifecycle_or_lose_its_source_reference(self):
+        base = 'run/runs/execution/sandbox-launches/'
+        for mutate in (lambda values: values.pop('run/runs/execution/launch.json'),
+                       lambda values: values.update({base + 'preview/lifecycle.json': values[base + 'fixture/lifecycle.json']})):
+            _, errors = self.classify('codex', mutate=mutate)
+            self.assertIn('plan_lifecycle_pairs', errors)
+
+    def test_host_normalization_rejects_foreign_interpreters_and_runtime_roots(self):
+        for mutate in (
+            lambda values: values['run/runs/execution/launch.json']['argv'].__setitem__(0, '/foreign/python'),
+            lambda values: values['run/runs/execution/launch.json']['argv'].__setitem__(2, '/foreign/gvisor.py'),
+            lambda values: values['run/runs/execution/native_turns/turn_001/turn.json']['argv'].__setitem__(0,
+                '/foreign/.tools/codex/node_modules/.bin/codex'),
+        ):
+            _, errors = self.classify('codex', mutate=mutate)
+            self.assertTrue(errors)
+
+    def test_host_openclaw_system_python_normalization_requires_the_original_probe(self):
+        plan = 'run/runs/execution/sandbox-launches/preflight/plan.json'
+        for mutate in (
+            lambda values: values[plan]['argv'].__setitem__(0, '/foreign/python'),
+            lambda values: values[plan]['argv'].__setitem__(2, "print('unrelated')"),
+            lambda values: values[plan]['mounts'].append({'destination': '/transport'}),
+        ):
+            _, errors = self.classify('openclaw', mutate=mutate)
+            self.assertIn('openclaw_preflight_plan', errors)
+
+    def test_native_smoke_requires_complete_lifecycles_for_every_cli(self):
+        name = 'run/runs/execution/sandbox-launches/fixture/lifecycle.json'
+        for harness in controller.NATIVE_EXECUTABLES:
+            for field in ('backend', 'platform', 'network', 'host_proc_bound', 'returncode',
+                          'parent_disconnected', 'state', 'guest_environment_keys'):
+                with self.subTest(harness=harness, missing=field):
+                    _, errors = self.classify(harness, mutate=lambda values: values[name].pop(field))
+                    self.assertIn('sandbox_lifecycle:' + name.rsplit('/', 1)[0], errors)
+
+    def test_native_smoke_rejects_lifecycle_policy_drift_and_wrong_state_identity(self):
+        name = 'run/runs/execution/sandbox-launches/fixture/lifecycle.json'
+        for field, bad in (('backend', 'native'), ('platform', 'ptrace'), ('network', 'host'),
+                           ('host_proc_bound', True), ('returncode', False), ('parent_disconnected', 1),
+                           ('cleanup_returncode', 1), ('state_removed', False),
+                           ('guest_environment_keys', ['HF_TOKEN']), ('guest_environment_keys', [None]),
+                           ('state', '/unrelated/gvisor-state/run-fixture')):
+            with self.subTest(field=field, bad=bad):
+                _, errors = self.classify('codex', mutate=lambda values: values[name].update({field: bad}))
+                self.assertTrue(any(error.startswith('sandbox_lifecycle:') for error in errors))
+        _, errors = self.classify('codex', mutate=lambda values: values[name].update(
+            state=values[name]['state'] + '/../../outside'))
+        self.assertTrue(any(error.startswith('sandbox_lifecycle:') for error in errors))
+
+    def test_native_smoke_preserves_a_recorded_controlled_nonzero_exit(self):
+        name = 'run/runs/execution/sandbox-launches/fixture/lifecycle.json'
+        _, errors = self.classify('opencode', 'multi_turn', mutate=lambda values: values[name].update(
+            returncode=-15, parent_disconnected=True))
+        self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

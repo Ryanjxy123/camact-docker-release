@@ -1,0 +1,181 @@
+{
+  "schema": "camact.native-diff-final-review.v1",
+  "source_artifact_run": 40766742381,
+  "method": "Replay original verified historical JSON records with original shared output parent and /opt/camact prefixes relocated into private fixture/current checkout. Use actual current runtime executable resolution. No guest/model/task execution.",
+  "source_sha256": {
+    "scripts/native-loop-smoke.py": "a017a84eaaee3015818afe91a196097910c9c3185009ca2229d7a5983c7cb0ac",
+    "scripts/diagnostic/production-plan-controller.py": "d170d09c6551d0e34f032da81e79dfafd33c5e6306f28a094f0f69589567daa4"
+  },
+  "cases": [
+    {
+      "case": "claude-multi_turn",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 0,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "claude-single_turn",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 0,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "claude-users_history",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 0,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "codex-multi_turn",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "codex-single_turn",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "codex-users_history",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "deepseek-multi_turn",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "deepseek-single_turn",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "deepseek-users_history",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "openclaw-multi_turn",
+      "baseline_errors": [],
+      "executed": 3,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "openclaw-single_turn",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "openclaw-users_history",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "opencode-multi_turn",
+      "baseline_errors": [],
+      "executed": 2,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "opencode-single_turn",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    },
+    {
+      "case": "opencode-users_history",
+      "baseline_errors": [],
+      "executed": 1,
+      "previews": 1,
+      "missing_fields_tested": 10,
+      "missing_fields_all_rejected": true,
+      "drifts_tested": 14,
+      "drifts_all_rejected": true,
+      "controlled_cli_exit_preserved": true
+    }
+  ],
+  "baseline_cases_passed": 15,
+  "missing_field_cases_rejected": 150,
+  "policy_drift_cases_rejected": 210,
+  "controlled_cli_exit_cases_preserved": 15,
+  "result": "PASS"
+}

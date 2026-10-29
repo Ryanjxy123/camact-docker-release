@@ -1,6 +1,6 @@
 # CamAct Docker 发布项目
 
-**镜像发布状态：NOT_READY_TO_PUBLISH。** 已修复镜像扫描日志不可见、合法 Docker 层被拒绝和已核实的官方依赖误报；扫描仍是发布前的强制门禁。本机普通 Docker 容器受外层服务器权限限制，完整镜像、Compose 和容器内 gVisor 集成仍需在 GitHub Actions 手动验收。可使用 `version=0.1.0-rc.1`、`publish=false` 重新运行。当前检查、诊断 artifact 和剩余门禁见 [docs/VALIDATION.md](docs/VALIDATION.md)。未启动正式 Benchmark、付费模型或 GHCR 发布。
+**当前源码可进入下一次手动验收，保持 `publish=false`。** 服务器正式目录已同步成功版本 `b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85` 的完整 Docker/gVisor 修复；该版本的正式 Docker、完整 HF 缓存和 stop/kill/resume 已有真实 Actions 证据。本轮补齐诊断策略漂移及 Native plan 生命周期验收，修改后的候选仍需重新构建并在 Actions 验证。当前 Kubernetes 容器不能提供真实 Docker 验收；不以本地静态或离线测试宣称新镜像 `READY_TO_PUBLISH`。证据及边界见 [docs/VALIDATION.md](docs/VALIDATION.md)。未运行正式 Benchmark、调用付费模型或发布 GHCR。
 
 ## 职责与源码
 
@@ -34,6 +34,8 @@ tests/ / docs/                   可复现的离线测试与交接说明
 Linux x86_64；建议独立 Ubuntu 24.04 主机、独立部署账号、宿主 Python 3（`camactctl` 仅用标准库）、Docker Engine、Compose v2、已启用的 AppArmor 与支持 ABI4/userns 的 AppArmor 4 以上 parser，以及可用的 user/PID/mount namespace 和 ptrace/Systrap。其他 Ubuntu/Debian 主机须满足相同条件；AppArmor 3 的语法检查不构成生产兼容证明。镜像目前只锁定 `linux/amd64`，评测 Python 3.13.11 在镜像内。至少预留 4 GiB 可用内存和 15 GiB 空间，较高并发及正式结果应另行扩容；下载数据约 2.35 GB，结果容量取决于运行规模。启用 cgroup、允许 Docker 的 proc 挂载；受限的 Kubernetes/共享容器可能不满足条件。
 
 新主机可执行 `sudo bash scripts/install-host.sh` 安装 AppArmor 软件包、加载固定 Runner 策略，再安装已锁定并校验的 Docker 28.5.1、Compose 2.40.3、Buildx 0.29.1；脚本要求 Ubuntu/Debian systemd，拒绝覆盖已有 Docker，并创建 Docker 管理组。ABI4/profile 加载失败时立即停止。管理员需为独立部署账号授予访问权，例如在创建 `camact-deploy` 账号后执行 `sudo usermod -aG docker camact-deploy`，再重新登录该账号。已有 Docker 的服务器检查三个版本后，独立运行下方策略安装命令；无需重装 Docker。`camactctl` 不会隐式修改宿主服务或策略。
+
+成功 Actions 使用 GitHub-hosted `ubuntu-24.04`，不是当前服务器或 self-hosted Runner。此前记录的成功环境 Docker 28.0.4、Compose 2.38.2、Buildx 0.38.1 与上述安装器版本不同；Workflow 使用宿主 Docker/Compose，Buildx setup 未固定版本。两组 CLI 的配置/参数检查不能证明两个 Daemon、内核与 AppArmor 环境等价。固定版本宿主的全新安装和 Docker 内 gVisor 尚未实测，须在目标主机执行全部门禁；不能把安装器的下载/版本校验解释为部署成功。
 
 本方案将 runsc 和官方 CLI 一起安装在 Runner 镜像内，由可信 Runner 创建每任务 rootless gVisor；不需要将当前宿主 `.tools` 复制入库，也不需要 Docker 的 `--runtime=runsc` 注册。保留原每任务 OCI 隔离、`network=none`、只读包与当前 Task 工作区、UDS Relay。没有 Docker-in-Docker、privileged 或 Agent Docker socket。选择该方式是为了保留原路径、Relay 和 OpenClaw tmpfs 协议；Docker 内可行性仍须通过下文门禁；在权限完整的独立主机执行 `bash scripts/verify-docker.sh` 可重跑构建、15 个原生合成用例及容器重建持久化检查。
 
@@ -182,13 +184,13 @@ python3 scripts/scan-image.py --archive /path/to/docker-save.tar
 
 ## GitHub Actions 发布
 
-本目录是独立 Git 仓库，未设置远端、未推送。源码安全检查通过即可上传 GitHub 私有仓库；`READY_TO_PUBLISH` 所需的真实 Docker 门禁可在上传后验收。提交时应同时包含两个 Workflow 文件。运行 `git ls-files` 和 `python3 scripts/scan-release.py --tracked` 检查待上传内容，本地配置、数据、凭据及 `.validation` 继续由忽略规则排除。
+本目录是独立 Git 仓库，正式远端为 `Ryanjxy123/camact-docker-release`，手动验收分支为 `main`。运行 `git ls-files` 和 `python3 scripts/scan-release.py --tracked` 检查提交内容；本地配置、数据、凭据、原始审计产物及 `.validation` 不随源码上传。精简审计报告按项目规范保存在 `harness/_log/`，并被 Docker 构建上下文排除。
 
 上传后的操作步骤：
 
-1. 在私有仓库的 Settings → Actions 中允许执行本仓库 Workflow；无需添加 Agent、Judge、Simulator 或 HF Secrets。
+1. 在仓库的 Settings → Actions 中允许执行本仓库 Workflow；无需添加 Agent、Judge、Simulator 或 HF Secrets。
 2. 打开 Actions → **Verify and optionally publish CamAct** → **Run workflow**，选择上传的分支，输入 `version=0.1.0-rc.1`，保持 `publish=false`。
-3. `ubuntu-24.04` Runner 依次扫描源码、构建并加载 `linux/amd64` 候选镜像、运行断网容器测试，再执行镜像层扫描、Compose/gVisor、图片 codec、15 个原生合成用例及容器重建持久化门禁。任一步失败，Workflow 失败；默认验证任务没有包写权限，也不登录或推送 GHCR。
+3. `ubuntu-24.04` Runner 依次扫描源码、构建并加载 `linux/amd64` 候选镜像、检查不可变身份并扫描镜像层，然后运行断网容器测试、Compose/gVisor、图片 codec、15 个原生合成用例及容器重建持久化门禁。任一步失败，Workflow 失败；默认验证任务没有包写权限，也不登录或推送 GHCR。
 4. 核对 [VALIDATION.md](docs/VALIDATION.md) 中的剩余门禁和宿主 AppArmor 条件，完成全部验收并复核结果后，才以正式版本重新手动运行并选择 `publish=true`。此次仍会完整重建和重验，只推送本次通过扫描及测试的同一本地镜像，不另行构建。当前状态只适合执行第 2 步的验证。
 
 普通 Push、Tag 和 GitHub Release 均不会触发此 Workflow。入口 `publish.yml` 调用同 Commit 的 `verify-candidate.yml`；验证分支只有 `contents: read`，显式发布分支才额外授予 `packages: write`。Checkout 不保留 Git 凭据，第三方 Action 固定源码 Commit；内置 `GITHUB_TOKEN` 仅在门禁成功后用于 GHCR 登录。镜像仅使用明确版本和 `sha-<commit>` 标签，不使用 latest；验证不下载正式 Benchmark、不配置模型 Key、不调用真实模型。多阶段构建把源码、运行库和锁定 CLI 放入最终镜像，编译工具留在构建阶段。
@@ -197,4 +199,4 @@ python3 scripts/scan-image.py --archive /path/to/docker-save.tar
 
 扫描诊断直接显示在 Actions 日志中，并在 `docker-verification-diagnostics` artifact 中保留脱敏扫描 JSON 和阶段摘要。已核实的官方依赖误报记录在 `locks/image-scan-exceptions.json`，必须同时匹配路径、文件哈希和具体命中指纹；更新依赖或基础镜像时需重新核验来源。未知命中、文件变化及扫描错误仍会阻断发布。
 
-本轮只本地执行 Workflow YAML/actionlint 静态检查，未触发远端验证或发布。只有真实 Docker 构建、启动、完整 HF 下载与挂载复用、终止/恢复、版本记录、容器内 gVisor/完整执行与评分统计、安全层扫描全部通过后，才可将镜像验收状态改为 `READY_TO_PUBLISH`。CI 的合成缓存和持久化门禁不能替代尚未完成的完整 HF 与终止/恢复验收。
+本轮未触发任何 Actions 或发布。下一次先在 `main` 手动运行 **Verify and optionally publish CamAct**（`publish.yml`），设置 `version=0.1.0-rc.1`、`publish=false`。成功后，在同一完整源码 SHA 上分别运行 **Validate the complete pinned HF cache**（`verify-full-cache.yml`）及 **Validate synthetic Docker stop and kill recovery**（`verify-recovery.yml`），输入新的 `image_run_id`、相同 `version` 和当前完整 `expected_source_revision`；参数以对应 Workflow 的输入定义为准。旧 `b0592d2` 镜像不能用于新 SHA 验收。两个入口见 [完整缓存验收](docs/FULL_CACHE_VALIDATION.md) 与 [恢复验收](docs/RECOVERY_VALIDATION.md)。诊断入口可独立排障，但不能代替正式门禁。只有同一候选的全部真实 Docker、HF 和恢复门禁通过后，才可确认该候选 `READY_TO_PUBLISH`。

@@ -26,6 +26,22 @@ def result(code=0, stdout="", stderr="", number=None, timeout=False):
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_compose_source_requires_the_production_named_apparmor_before_diagnostic_override(self):
+        import yaml
+        service = yaml.safe_load((PROJECT / 'compose.yaml').read_text())['services']['runner']
+        for key in ('env_file', 'environment', 'secrets', 'volumes'):
+            service.pop(key, None)
+        expected = service['security_opt']
+        for security, status in ((expected, 'PASS'), (expected[:-1], 'FAIL'),
+                                 (expected + ['apparmor=unexpected'], 'FAIL'),
+                                 ([*expected[:-1], 'apparmor=unconfined'], 'FAIL'),
+                                 ([*expected[:-1], 'apparmor=camact-gvisor-diagnostic-v1'], 'FAIL')):
+            with self.subTest(security=security), tempfile.TemporaryDirectory() as temporary:
+                source = {'services': {'runner': dict(service, security_opt=security)}}
+                with mock.patch.object(diag, 'command', return_value=result(stdout=json.dumps(source))):
+                    _, observed = diag.compose_policy(Path(temporary))
+                self.assertEqual(observed['status'], status)
+
     def test_redacts_credentials_paths_urls_and_terminal_controls(self):
         canaries = ["hf_" + "a" * 32, "ghp_" + "b" * 32, "sk-" + "c" * 32,
                     "diagnostic-canary-a", "diagnostic-canary-b", "diagnostic-canary-c"]

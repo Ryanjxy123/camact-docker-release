@@ -1,0 +1,286 @@
+{
+  "schema": "camact.local-preflight-summary.v1",
+  "result": "PASS",
+  "scope": "local_offline_and_host_synthetic_validation",
+  "base_commit": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+  "canonical_benchmark_tasks": 0,
+  "real_model_calls": 0,
+  "source": {
+    "base_commit": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+    "captured_code_files": 206,
+    "current_code_identical_to_tested_snapshot": true,
+    "excluded_non_runtime_archive_prefixes": [
+      "harness/_log/"
+    ],
+    "live_archive_document_comparison_ref": "runs/final-source-snapshot-check-including-live-audit-documents.json",
+    "changed_paths": [],
+    "native_smoke_sha256": "a017a84eaaee3015818afe91a196097910c9c3185009ca2229d7a5983c7cb0ac",
+    "controller_sha256": "d170d09c6551d0e34f032da81e79dfafd33c5e6306f28a094f0f69589567daa4",
+    "evidence_ref": "runs/final-source-snapshot-check.json"
+  },
+  "offline": {
+    "baseline": {
+      "testsRun": 336,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "success": true
+    },
+    "baseline_ref": "runs/local-offline/offline-tests.json",
+    "final": {
+      "testsRun": 346,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "success": true
+    },
+    "final_ref": "runs/local-offline-verified/offline-tests.json",
+    "test_timeouts_unchanged": true,
+    "formal_evaluator_pipeline": "included_in_complete_suite"
+  },
+  "python": {
+    "version": "3.13.11",
+    "runtime_pins_matched": 35,
+    "bootstrap_pins_matched": 1,
+    "evaluator_pins_matched": 21,
+    "all_lock_versions_match": true,
+    "copied_regular_files": 5198,
+    "all_copied_runtime_bytes_equal": true,
+    "pip_check": "PASS",
+    "startup_mean_seconds": {
+      "nfs": 0.297903,
+      "local": 0.104026
+    },
+    "evidence_refs": [
+      "runs/python-relocation/all-lock-versions.json",
+      "runs/python-relocation/checks.json",
+      "runs/python-relocation/relocation.json"
+    ]
+  },
+  "host_gvisor": {
+    "result": "PASS",
+    "namespace_checks": 27,
+    "all_namespace_checks_passed": true,
+    "real_production_oci_lifecycle": "PASS",
+    "state_removed": true,
+    "evidence_ref": "runs/host-gvisor/execution.json"
+  },
+  "locked_runtimes": {
+    "node": "24.14.0",
+    "gvisor": "20261012.0",
+    "claude": "2.1.160",
+    "codex": "0.147.0",
+    "opencode": "2.0.32",
+    "deepseek": "0.2.1-rc.2",
+    "openclaw": "2026.6.11"
+  },
+  "runtime_ref": "runs/local-runtime/stdout.log",
+  "native_codec_files_verified": 15,
+  "codecs": {
+    "claude": {
+      "encoded_bytes": 22887,
+      "dimensions": [
+        1000,
+        667
+      ],
+      "exact_replay": true,
+      "wrong_digest_rejected": true
+    },
+    "codex": {
+      "encoded_bytes": 25132,
+      "dimensions": [
+        1000,
+        667
+      ],
+      "exact_replay": true,
+      "wrong_digest_rejected": true
+    },
+    "opencode": {
+      "encoded_bytes": 360025,
+      "dimensions": [
+        2000,
+        1333
+      ],
+      "exact_replay": true,
+      "wrong_digest_rejected": true
+    }
+  },
+  "codecs_ref": "runs/local-codecs/stdout.log",
+  "native": {
+    "final_passed_cases": 15,
+    "execution_reused_after_final_validation": 12,
+    "fresh_openclaw_executions": 3,
+    "final_reclassification_ref": "runs/native-matrix/final-reclassification.json",
+    "cases": [
+      {
+        "harness": "claude",
+        "mode": "multi_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/claude-multi_turn/execution.json",
+        "validation_ref": "runs/native-matrix/claude-multi_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "claude",
+        "mode": "single_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/claude-single_turn/execution.json",
+        "validation_ref": "runs/native-matrix/claude-single_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "claude",
+        "mode": "users_history",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/claude-users_history/execution.json",
+        "validation_ref": "runs/native-matrix/claude-users_history/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "codex",
+        "mode": "multi_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/codex-multi_turn/execution.json",
+        "validation_ref": "runs/native-matrix/codex-multi_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "codex",
+        "mode": "single_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/codex-single_turn/execution.json",
+        "validation_ref": "runs/native-matrix/codex-single_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "codex",
+        "mode": "users_history",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/codex-users_history/execution.json",
+        "validation_ref": "runs/native-matrix/codex-users_history/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "deepseek",
+        "mode": "multi_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/deepseek-multi_turn/execution.json",
+        "validation_ref": "runs/native-matrix/deepseek-multi_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "deepseek",
+        "mode": "single_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/deepseek-single_turn/execution.json",
+        "validation_ref": "runs/native-matrix/deepseek-single_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "deepseek",
+        "mode": "users_history",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/deepseek-users_history/execution.json",
+        "validation_ref": "runs/native-matrix/deepseek-users_history/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "openclaw",
+        "mode": "multi_turn",
+        "passed": true,
+        "execution_ref": "runs/openclaw-verified/openclaw-multi_turn/execution.json",
+        "validation_ref": "runs/openclaw-verified/openclaw-multi_turn/output/validation.json",
+        "final_validation": "fresh_execution_with_final_source"
+      },
+      {
+        "harness": "openclaw",
+        "mode": "single_turn",
+        "passed": true,
+        "execution_ref": "runs/openclaw-verified/openclaw-single_turn/execution.json",
+        "validation_ref": "runs/openclaw-verified/openclaw-single_turn/output/validation.json",
+        "final_validation": "fresh_execution_with_final_source"
+      },
+      {
+        "harness": "openclaw",
+        "mode": "users_history",
+        "passed": true,
+        "execution_ref": "runs/openclaw-verified/openclaw-users_history/execution.json",
+        "validation_ref": "runs/openclaw-verified/openclaw-users_history/output/validation.json",
+        "final_validation": "fresh_execution_with_final_source"
+      },
+      {
+        "harness": "opencode",
+        "mode": "multi_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/opencode-multi_turn/execution.json",
+        "validation_ref": "runs/native-matrix/opencode-multi_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "opencode",
+        "mode": "single_turn",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/opencode-single_turn/execution.json",
+        "validation_ref": "runs/native-matrix/opencode-single_turn/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      },
+      {
+        "harness": "opencode",
+        "mode": "users_history",
+        "passed": true,
+        "execution_ref": "runs/native-matrix/opencode-users_history/execution.json",
+        "validation_ref": "runs/native-matrix/opencode-users_history/output/validation.json",
+        "final_validation": "retained_execution_reclassified_with_final_helper"
+      }
+    ]
+  },
+  "retained_prior_results": [
+    {
+      "ref": "runs/local-offline-final/offline-tests.json",
+      "result": "FAIL",
+      "testsRun": 342,
+      "failures": 0,
+      "errors": 6,
+      "skipped": 0,
+      "reason": "Docker stub child processes exceeded unchanged 60-second timeout while native cases also ran"
+    },
+    {
+      "ref": "runs/docker-contract-serial-probe/execution.json",
+      "result": "FAIL",
+      "testsRun": 10,
+      "errors": 4,
+      "reason": "Serial NFS-interpreter probe also encountered timeouts and post-timeout fixture cleanup errors; concurrency alone was not established as the cause"
+    },
+    {
+      "ref": "runs/native-matrix/matrix-summary.json",
+      "result": "FAIL",
+      "passed_cases": 12,
+      "failed_cases": 3,
+      "reason": "Initial OpenClaw runs completed native execution and visual evaluation, then failed host preflight interpreter evidence classification; original rows remain unchanged"
+    },
+    {
+      "ref": "runs/openclaw-final/matrix-summary.json",
+      "result": "FAIL",
+      "failed_cases": 3,
+      "agent_requests": 0,
+      "simulator_requests": 0,
+      "real_model_calls": 0,
+      "reason": "Overlong validation TMPDIR produced AF_UNIX path too long before native model requests; short private transport directory used for fresh verified runs"
+    },
+    {
+      "ref": "runs/native-matrix/final-reclassification-different-verifier-interpreter.json",
+      "result": "REJECTED",
+      "reason": "Replaying original launcher evidence with a different Python interpreter correctly rejected provenance; final reclassification used the original recorded interpreter"
+    }
+  ],
+  "artifact_transfer": {
+    "all_bytes_and_links_equal": true,
+    "evidence_ref": "runs/final-copy-integrity.json"
+  },
+  "real_docker": {
+    "validated_this_round": false,
+    "result": "NOT_VALIDATED",
+    "reason": "Local Docker CLI and socket unavailable; host results do not replace container validation"
+  },
+  "raw_evidence_policy": "Detailed commands, absolute paths, original failures and raw outputs remain in private runs evidence; this summary uses archive-relative references."
+}

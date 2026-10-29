@@ -477,7 +477,8 @@ def compose_policy(work):
     service = json.loads(result["stdout"])["services"]["runner"]
     valid = (service["user"] == "10001:10001" and service.get("cap_drop") == ["ALL"]
              and not service.get("cap_add") and service.get("read_only") is True
-             and service.get("security_opt") == ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json"]
+             and service.get("security_opt") == ["no-new-privileges:true", "seccomp=./deploy/seccomp-gvisor.json",
+                                                "apparmor=camact-gvisor-v1"]
              and service.get("platform") == "linux/amd64" and service.get("pids_limit") == 4096
              and not service.get("privileged") and not service.get("env_file")
              and not service.get("environment") and not service.get("secrets") and not service.get("volumes"))

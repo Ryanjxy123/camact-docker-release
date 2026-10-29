@@ -1,0 +1,177 @@
+{
+  "schema": "camact.production-deployment-audit.v1",
+  "audit_date": "2026-10-29",
+  "timezone": "Asia/Shanghai",
+  "archive_root": "harness/_log/2026-10-29/camact-docker-v1-production-preflight",
+  "repository": "Ryanjxy123/camact-docker-release",
+  "target_branch": "main",
+  "starting_commit": "3c613d50c9e868b298bedb31cad173bc475ef680",
+  "successful_reference_commit": "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85",
+  "migration_method": "git merge --ff-only origin/main",
+  "migration_commits": [
+    "949c87d94ffbc690f26d5368459fb04b69185439",
+    "17ae27e6fbe447c4b69532e639550cd0c8a32819",
+    "6a658dd5c2065884a8b9f0c6b1d25a5e26d6a1a7",
+    "ec4cd594aa47f9bc2950ea6c81918485aba1a19f",
+    "f30ff6452fc9bb8a613a95ef85315de48acbfe9f",
+    "9e925ef34dbc803b8ffdd60c2a4eb11e2634059d",
+    "2f9478a4092806e8653209736c5b0a247600b483",
+    "bc29c7f2e56a9c274848fc8f9c399c3f3d14ffe6",
+    "857454199d169d5614f0dd4fe50b96a822c0d2ac",
+    "7abc81df5cc9369cb7319e6163fd9766ed8fcea8",
+    "5a92dfebb6a2e6431c383b00350fc242bf355b3f",
+    "b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85"
+  ],
+  "migration_files": [
+    ".dockerignore",
+    ".github/workflows/diagnose-gvisor.yml",
+    ".github/workflows/verify-candidate.yml",
+    ".github/workflows/verify-full-cache.yml",
+    ".github/workflows/verify-recovery.yml",
+    ".gitignore",
+    "README.md",
+    "compose.yaml",
+    "deploy/camact-gvisor-v1.profile",
+    "docs/FULL_CACHE_VALIDATION.md",
+    "docs/RECOVERY_VALIDATION.md",
+    "scripts/diagnose-gvisor.py",
+    "scripts/diagnostic/camact-gvisor-diagnostic-v1.profile",
+    "scripts/diagnostic/production-plan-controller.py",
+    "scripts/diagnostic/production-plan-probe.py",
+    "scripts/install-gvisor-policy.sh",
+    "scripts/install-host.sh",
+    "scripts/run-compose-offline-tests.py",
+    "scripts/verify-docker-recovery.py",
+    "scripts/verify-docker.sh",
+    "scripts/verify-full-cache.py",
+    "scripts/verify-runner-policy.py",
+    "tests/test_compose_offline_tests.py",
+    "tests/test_docker_recovery.py",
+    "tests/test_docker_verification.py",
+    "tests/test_full_cache_validation.py",
+    "tests/test_gvisor_diagnostics.py",
+    "tests/test_gvisor_policy.py",
+    "tests/test_production_plan_controller.py",
+    "tests/test_production_plan_probe.py",
+    "tests/test_release_diagnostics.py",
+    "tests/test_runner_policy.py"
+  ],
+  "protected_scope": {
+    "paths": [
+      "benchmark",
+      "deployment",
+      "release",
+      "harness",
+      "evaluation",
+      "camact_eval",
+      "camact_harness",
+      "locks",
+      "Dockerfile"
+    ],
+    "permitted_archive_addition": "harness/_log/",
+    "core_source_or_dependency_lock_changes": [],
+    "baseline_reference_git_objects": {
+      "benchmark": "63a5a0bdf79b6e89d1af70070da2582b12f105c0",
+      "deployment": "44881f02a2bac48592fd9344419add51c4b355b4",
+      "release": "a47dcb8410729b37855c665e904804b992f098ce",
+      "harness": "545b69c2417702fa13751ecc312c96c50f77b615",
+      "evaluation": "b1fc67092530608dec493a4981711ea3af298c0c",
+      "camact_eval": "e8f72e39ff219f49fa629f3136baf11aea984e8e",
+      "camact_harness": "c5175c39c35b1354433eb49732524de1b16cf72b",
+      "locks": "add806b9cc117643e8cea51e55d229753648adba",
+      "Dockerfile": "495d966cb8de99a1ffddd0df15d1e321874e8c08"
+    },
+    "successful_reference_git_objects": {
+      "benchmark": "63a5a0bdf79b6e89d1af70070da2582b12f105c0",
+      "deployment": "44881f02a2bac48592fd9344419add51c4b355b4",
+      "release": "a47dcb8410729b37855c665e904804b992f098ce",
+      "harness": "545b69c2417702fa13751ecc312c96c50f77b615",
+      "evaluation": "b1fc67092530608dec493a4981711ea3af298c0c",
+      "camact_eval": "e8f72e39ff219f49fa629f3136baf11aea984e8e",
+      "camact_harness": "c5175c39c35b1354433eb49732524de1b16cf72b",
+      "locks": "add806b9cc117643e8cea51e55d229753648adba",
+      "Dockerfile": "495d966cb8de99a1ffddd0df15d1e321874e8c08"
+    }
+  },
+  "fixes": [
+    "Exact production named AppArmor source checks in both diagnostic paths",
+    "Complete native plan/preview/invocation/lifecycle coverage using successful shared validators",
+    "Exact checkout and source-proven OpenClaw host preflight path mapping",
+    "Classifier controller included in immutable critical-source digest",
+    "Current deployment, evidence, versions and same-SHA manual workflow documentation"
+  ],
+  "static_validation": {
+    "workflows_actionlint_1_7_12": 5,
+    "shell_syntax": 4,
+    "python_ast": 183,
+    "docker_context_files": 218,
+    "docker_exclusion_probes_passed": 35,
+    "public_seccomp_and_named_profile_in_context": true,
+    "compose_credentials_cache_benchmark_archive_in_context": false,
+    "source_scan": "runs/source-scan-final.json",
+    "context_report": "runs/context/final-report.json",
+    "actual_image_built": false
+  },
+  "runtime_evidence": "evaluation/local-summary.json",
+  "reference_evidence": "evaluation/reference-summary.json",
+  "independent_review": "evaluation/diff-review-final.json",
+  "unverified_current_candidate": [
+    "Real Docker daemon/container execution on this Kubernetes server",
+    "Final Docker image build and actual layer scan",
+    "AppArmor4 parser compile/load/enforce and namespace policy inside Docker",
+    "Actual Docker Compose UID/Secrets/data/tmpfs mounts and READY/RELEASE handshake",
+    "All 15 native cases inside the newly built Docker candidate",
+    "Full fixed-HF download/Memory mapping/offline cache across new Docker containers",
+    "Docker stop/kill/resume and cleanup against the new candidate",
+    "Fresh host install with Docker28.5.1/Compose2.40.3/Buildx0.29.1"
+  ],
+  "manual_actions": {
+    "first": {
+      "workflow": "publish.yml",
+      "ref": "main",
+      "version": "0.1.0-rc.1",
+      "publish": false
+    },
+    "then": [
+      {
+        "workflow": "verify-full-cache.yml",
+        "image_run_id": "new successful publish.yml run",
+        "expected_source_revision": "this final full commit SHA",
+        "version": "0.1.0-rc.1"
+      },
+      {
+        "workflow": "verify-recovery.yml",
+        "image_run_id": "same new successful publish.yml run",
+        "expected_source_revision": "same final full commit SHA",
+        "version": "0.1.0-rc.1"
+      }
+    ],
+    "verified_image_retention_days": 3,
+    "historical_image_reuse_for_new_sha": false
+  },
+  "prohibited_actions_performed": {
+    "actions_triggered": 0,
+    "ghcr_publishes": 0,
+    "paid_model_calls": 0,
+    "canonical_benchmark_executions": 0,
+    "privileged_or_unconfined_workarounds": 0,
+    "security_checks_removed": 0,
+    "test_timeouts_changed": 0
+  },
+  "root_artifact_leak": 0,
+  "archive_scan": "runs/archive-security-scan.json",
+  "new_candidate_ready_to_publish": false,
+  "final_delivery": "manifest/delivery.json (local only, written after commit/push to avoid self-referential SHA)",
+  "ready_for_next_manual_actions": true,
+  "local_final_results": {
+    "full_offline_tests": 346,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "host_gvisor_checks": 27,
+    "native_cases_final_passed": 15,
+    "native_cases_retained_execution_final_revalidated": 12,
+    "native_cases_fresh_final_openclaw_execution": 3,
+    "docker_runtime_acceptance_local": false
+  }
+}

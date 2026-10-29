@@ -1,0 +1,38 @@
+# Production security audit
+
+Reviewed successful source `b0592d2f7002d0bd3a2c1e29e02e07e4e35eed85` and the updated official working tree. No Docker daemon, paid model, Benchmark execution, publication or Actions trigger was performed by this audit worker.
+
+## Actual defects and changes
+
+1. Both diagnostic Compose-source checks still expected only NoNewPrivs and seccomp. Production Compose already includes `apparmor=camact-gvisor-v1`, so both diagnostic entrypoints would reject the current production configuration before running their diagnostic containers. `scripts/diagnose-gvisor.py` and `scripts/diagnostic/production-plan-controller.py` now require the exact three production options. Missing, extra, unconfined and diagnostic-profile substitutions remain rejected. The selected diagnostic container profile remains unchanged.
+2. Production `scripts/native-loop-smoke.py` only enumerated lifecycle files, so a task with one healthy lifecycle could hide an unknown orphan plan or an executed plan missing its lifecycle. It now gathers all plans, lifecycles, coordinator launch references, native turns and Claude invocations, and reuses the previously successful independent `classify_native_plans` implementation. `execution_plan_pairs_verified` is a mandatory smoke assertion and is also required by independent diagnostic validation. Source-proven previews remain unexecuted; no lifecycle is fabricated.
+3. The same classifier is strict about the release `/opt/camact` layout. The documented direct host smoke command is preserved by mapping only this checkout's exact root and its exact current Python/gVisor launcher to that layout. Runtime executables are first resolved from the current checkout's `.tools/<harness>` and then checked by the classifier. Foreign roots and interpreters are rejected. Stored source evidence is not rewritten.
+4. Since the native acceptance now imports the controller's classifier inside the image, the controller is no longer a host-only reuse-safe file. It is included in the immutable critical-source digest and critical worktree-clean check. Classifier changes now require rebuilding the image; original diagnostic AppArmor profile-only iterations remain reuse-safe. Source tests explicitly inventory the controller and reject both committed changes and staged/unstaged drift before image scanning or container creation.
+5. Independent review replayed the successful native artifacts and showed that pairing alone still allowed incomplete lifecycle documents. The existing independent validator's full lifecycle predicate is now shared by both validation paths. Backend, platform, network, host-proc policy, typed exit/parent-disconnect evidence, cleanup, state removal, state identity and guest environment evidence are mandatory. State paths must be canonical direct `run-*` children of the case's expected state parent. Recorded controlled nonzero CLI exits remain valid; interrupted recovery-task semantics were not changed.
+
+## Real host follow-up
+
+The main regression worker's first genuine host matrix passed twelve cases and exposed three OpenClaw classification failures. Original OpenClaw `sandbox_preflight` invokes the fixed `/usr/bin/python3`; production gVisor resolves it to this host's `/usr/bin/python3.10`. The release-only classifier correctly did not recognize that host-specific spelling. The smoke adapter now normalizes only the exact resolved `/usr/bin/python3` command together with the complete, unchanged source literal probe. Foreign interpreters, changed probe code and transport-bearing preflight plans remain rejected. The production classifier's interpreter allowlist was not changed.
+
+All fifteen original host case evidence trees were reclassified read-only with the final pairing and complete-lifecycle checks. They returned no errors; the original twelve PASS and three FAIL validation records were retained unchanged. This evidence replay is recorded separately from fresh native execution in `../runs/security-audit/actual-host-evidence-final-reclassification.json`. The regression worker performs fresh OpenClaw retries to prove final script exit/PASS behavior.
+
+## Preserved successful mechanisms
+
+- `deploy/camact-gvisor-v1.profile` is a named ABI4 enforce profile. It grants the locked runsc mount/pivot sequence and bounded workload paths while retaining proc/sys restrictions; the outer Runner drops all capabilities.
+- `scripts/install-gvisor-policy.sh` requires AppArmor parser 4+, validates the exact fixed policy and six finite literal macros, compiles before installing, and checks enforce mode. It does not modify global AppArmor, sysctls or daemon policy.
+- Production Compose retains UID/GID 10001, cap-drop ALL, NoNewPrivs, seccomp, named AppArmor, readonly root, pids=4096 and bounded private tmpfs. Persistent data must be executable and is checked separately from tmpfs flags; production `/tmp` flags were not changed.
+- `scripts/verify-runner-policy.py` creates only Runner with compatible `create --no-build --pull never runner`; dependencies are rejected. It inspects before and after start, reads a bounded regular owner-checked READY file using nonprivileged fixed `docker exec`, and writes the exclusive RELEASE marker only after all checks. No live tmpfs `docker cp` approval path was introduced.
+- `.dockerignore` allowlists public profile/seccomp and excludes secret/config/data/cache trees. Dockerfile keeps UID 10001 and locked runtime/image sources. Source/layer scans and provenance checks remain mandatory.
+- Recovery already reuses the independent classifier and preserves interrupted infrastructure errors and repeat-resume checks. No Harness core, evaluator, task/GT/rubric, Baseline, score or dependency lock was edited.
+
+## Tests and limits
+
+- `python3 -B -m unittest discover -s tests -p test_production_plan_controller.py -v`: 56 tests passed after final code changes.
+- `python3 -B -m unittest discover -s tests -p test_gvisor_diagnostics.py -v`: 25 tests passed.
+- Six focused new contracts are recorded in `../runs/security-audit/targeted-contracts.log`: all 15 harness/mode evidence combinations, unknown orphan/missing executed lifecycle/extra lifecycle for every CLI, preview lifecycle/reference fraud, foreign host interpreter/runtime roots, and exact production AppArmor source checks.
+- The final critical-source change has seven focused regression contracts in `../runs/security-audit/critical-digest-contracts.log`; this adds coverage for classifier identity without repeating unrelated tests.
+- Final lifecycle/OpenClaw checks: nine targeted test methods passed using locked Python 3.13.11; the tests cover every CLI's missing critical fields, policy/credential/typed-value/state-identity drift, unchanged controlled-stop exits, exact OpenClaw system-Python mapping and its negative cases. Raw output: `../runs/security-audit/complete-lifecycle-contracts.log`.
+- The contract tests mock Docker/process operations and use synthetic launch documents. They prove rejection/acceptance logic, not Docker runtime success. The main regression worker separately records real host gVisor/native execution and complete offline regression results.
+- `git diff --check` passed at audit time.
+- The locked new-host installer still targets Docker 28.5.1, Compose 2.40.3 and Buildx 0.29.1. Previous hosted success used Docker 28.0.4, Compose 2.38.2 and Buildx 0.38.1. Static/CLI checks cannot prove a fresh installation, kernel AppArmor load or real Docker launch on that new host. These need genuine runtime acceptance in the intended host/Actions environment.
+- No change was made merely to make an existing failed environment pass. No privileged/unconfined/seccomp-disable workaround was added.
